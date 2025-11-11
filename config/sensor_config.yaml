@@ -1,0 +1,47 @@
+mqtt:
+  broker: "localhost"
+  port: 1883
+  topics:
+    dht11: "factory/sensor/dht11"
+    vibration: "factory/sensor/vibration"
+    sound: "factory/sensor/sound"
+    accel_gyro: "factory/sensor/accel_gyro"
+    pressure: "factory/sensor/pressure"
+
+buffer:
+  directory: "/home/wise/deployment/data/buffer/"
+  max_files: 100
+
+sampling:
+  dht11:
+    frequency_hz: 1.0
+  vibration:
+    frequency_hz: 16.0
+  sound:
+    frequency_hz: 16.0
+  accel_gyro:
+    frequency_hz: 16.0
+  pressure:
+    frequency_hz: 16.0
+
+ads1115:
+  address: 0x48
+  gain: 1
+  channel_vibration: 0
+  channel_sound: 1
+
+mpu6050:
+  # MPU6050 addresses are usually 0x68 or 0x69, handled by auto-detection
+  # accel_sensitivity: 16384.0 # These are constants, not config
+  # gyro_sensitivity: 131.0    # These are constants, not config
+  pass
+
+bmp180:
+  # BMP085/BMP180 address is usually 0x77, handled by library
+  pass
+
+display:
+  loop_sleep_min_ms: 5
+  loop_sleep_max_ms: 50
+  display_refresh_min_ms: 20
+  display_refresh_max_ms: 100
