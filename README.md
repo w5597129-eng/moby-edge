@@ -1,3 +1,12 @@
+## 데이터 신뢰성/버퍼링
+
+MQTT 발행 실패 시 센서별 payload를 `/home/wise/deployment/data/buffer/`에 `.npy` 파일로 자동 저장합니다.
+- 파일명: `{sensor_type}_{timestamp_ns}.npy` (numpy object array)
+- 루프 시작 시 버퍼 폴더 내 모든 `.npy` 파일을 MQTT로 재전송, 성공 시 파일 삭제
+- 버퍼 파일이 100개를 초과하면 오래된 파일부터 삭제해 100개만 유지합니다.
+
+이 기능은 별도 설정 없이 자동 동작하며, 데이터 유실 방지 및 신뢰성 확보에 도움이 됩니다.
+
 # MOBY Edge Sensor Scripts
 
 간단한 요약: 이 저장소는 라즈베리파이에서 여러 센서를 읽어 MQTT로 퍼블리시하는 독립형 Python 스크립트 모음입니다.

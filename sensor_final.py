@@ -26,6 +26,10 @@ from adafruit_ads1x15.analog_in import AnalogIn
 import smbus2
 import paho.mqtt.client as mqtt
 
+# 버퍼 저장/재전송/정리용
+import os, glob
+import numpy as np
+
 # Pressure sensor (BMP085/BMP180)
 try:
     import Adafruit_BMP.BMP085 as BMP085  # pip3 install Adafruit-BMP
@@ -38,6 +42,52 @@ except Exception:
 # ==============================
 BROKER = "localhost"
 PORT = 1883
+# 버퍼 경로
+BUFFER_DIR = "/home/wise/deployment/data/buffer/"
+BUFFER_MAX_FILES = 100
+
+def ensure_buffer_dir():
+    os.makedirs(BUFFER_DIR, exist_ok=True)
+
+def save_to_buffer(sensor_type, payload):
+    ensure_buffer_dir()
+    ts = payload.get("timestamp_ns", now_ns())
+    fname = f"{sensor_type}_{ts}.npy"
+    fpath = os.path.join(BUFFER_DIR, fname)
+    # numpy로 저장: object array (payload dict)
+    np.save(fpath, np.array([payload], dtype=object))
+
+def resend_buffered(client):
+    ensure_buffer_dir()
+    npy_files = sorted(glob.glob(os.path.join(BUFFER_DIR, "*.npy")))
+    for f in npy_files:
+        try:
+            arr = np.load(f, allow_pickle=True)
+            if len(arr) > 0 and isinstance(arr[0], dict):
+                payload = arr[0]
+                topic = topic_for_type(payload.get("sensor_type"))
+                if topic:
+                    client.publish(topic, json.dumps(payload))
+                    os.remove(f)
+        except Exception:
+            pass
+    # 버퍼 파일 개수 초과 시 오래된 파일 삭제
+    npy_files = sorted(glob.glob(os.path.join(BUFFER_DIR, "*.npy")))
+    if len(npy_files) > BUFFER_MAX_FILES:
+        for f in npy_files[:len(npy_files)-BUFFER_MAX_FILES]:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+
+def topic_for_type(sensor_type):
+    return {
+        "dht11": TOPIC_DHT,
+        "vibration": TOPIC_VIB,
+        "sound": TOPIC_SOUND,
+        "accel_gyro": TOPIC_IMU,
+        "pressure": TOPIC_PRESS,
+    }.get(sensor_type)
 
 TOPIC_DHT     = "factory/sensor/dht11"
 TOPIC_VIB     = "factory/sensor/vibration"
@@ -164,6 +214,12 @@ def now_ns():
 # Main
 # ==============================
 def main():
+    # 루프 시작 시 버퍼 자동 재전송
+    ensure_buffer_dir()
+    client = mqtt.Client("sensor_pub_all")
+    client.connect(BROKER, PORT, 60)
+    client.loop_start()
+    resend_buffered(client)
     dht = adafruit_dht.DHT11(board.D4, use_pulseio=False)
     vib_ch, sound_ch = init_ads()
     bus = smbus2.SMBus(1)
@@ -178,9 +234,7 @@ def main():
             print("BMP085/BMP180 init error:", repr(e))
             bmp = None
 
-    client = mqtt.Client("sensor_pub_all")
-    client.connect(BROKER, PORT, 60)
-    client.loop_start()
+    # ...existing code...
 
     last_dht = last_vib = last_sound = last_imu = last_press = 0.0
 
@@ -221,7 +275,10 @@ def main():
                         },
                         "timestamp_ns": now_ns()
                     }
-                    client.publish(TOPIC_DHT, json.dumps(payload))
+                    try:
+                        client.publish(TOPIC_DHT, json.dumps(payload))
+                    except Exception:
+                        save_to_buffer("dht11", payload)
                     last_line["dht11"] = "DHT11     | T={:4.1f}C  H={:4.1f}%".format(temperature_c, humidity_percent)
             except Exception as e:
                 last_line["dht11"] = "DHT11     | Error: {}".format(e)
@@ -241,7 +298,10 @@ def main():
                     },
                     "timestamp_ns": now_ns()
                 }
-                client.publish(TOPIC_VIB, json.dumps(payload))
+                try:
+                    client.publish(TOPIC_VIB, json.dumps(payload))
+                except Exception:
+                    save_to_buffer("vibration", payload)
                 last_line["vibration"] = "VIBRATION | raw={:5d}  V={:.6f}V".format(vib_raw, vib_volt)
             except Exception as e:
                 last_line["vibration"] = "VIBRATION | Error: {}".format(e)
@@ -261,7 +321,10 @@ def main():
                     },
                     "timestamp_ns": now_ns()
                 }
-                client.publish(TOPIC_SOUND, json.dumps(payload))
+                try:
+                    client.publish(TOPIC_SOUND, json.dumps(payload))
+                except Exception:
+                    save_to_buffer("sound", payload)
                 last_line["sound"] = "SOUND     | raw={:5d}  V={:.6f}V".format(snd_raw, snd_volt)
             except Exception as e:
                 last_line["sound"] = "SOUND     | Error: {}".format(e)
@@ -286,7 +349,10 @@ def main():
                     },
                     "timestamp_ns": now_ns()
                 }
-                client.publish(TOPIC_IMU, json.dumps(payload))
+                try:
+                    client.publish(TOPIC_IMU, json.dumps(payload))
+                except Exception:
+                    save_to_buffer("accel_gyro", payload)
                 last_line["accel_gyro"] = (
                     "MPU6050   | Ax={:+.4f} Ay={:+.4f} Az={:+.4f}  "
                     "Gx={:+.4f} Gy={:+.4f} Gz={:+.4f}".format(ax4, ay4, az4, gx4, gy4, gz4)
@@ -323,7 +389,10 @@ def main():
                 if slp_h is not None:
                     payload["fields"]["sea_level_pressure_hpa"] = slp_h
 
-                client.publish(TOPIC_PRESS, json.dumps(payload))
+                try:
+                    client.publish(TOPIC_PRESS, json.dumps(payload))
+                except Exception:
+                    save_to_buffer("pressure", payload)
 
                 alt_text = " Alt={:.2f}m".format(altitude_m) if altitude_m is not None else ""
                 last_line["pressure"] = "BMP180    | T={:.2f}C  P={:.2f}hPa{}".format(temp_c, pressure_h, alt_text)
