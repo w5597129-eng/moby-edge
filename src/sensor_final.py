@@ -172,9 +172,8 @@ def read_all_sensors():
     try:
         dht = read_all_sensors.dht
         if dht:
-            t = dht.temperature
+            # Only read humidity from DHT11 here. Temperature will come from BMP sensor.
             h = dht.humidity
-            out["temperature"] = float(t) if t is not None else None
             out["humidity"] = float(h) if h is not None else None
     except Exception:
         pass
@@ -191,7 +190,14 @@ def read_all_sensors():
     try:
         bmp = read_all_sensors.bmp
         if bmp:
+            # Read pressure and temperature from BMP sensor. Temperature is sourced
+            # from BMP only (per requirement), so overwrite any other temp.
             out["pressure"] = float(bmp.read_pressure())/100.0
+            try:
+                out["temperature"] = float(bmp.read_temperature())
+            except Exception:
+                # Some BMP drivers may not implement read_temperature(); ignore if missing
+                pass
     except Exception:
         pass
 
