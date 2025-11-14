@@ -31,8 +31,65 @@ import os, glob
 import numpy as np
 import pickle, threading, queue
 from collections import deque
-# feature extraction helper from repo
-from src.feature_extractor import extract_features, SENSOR_FIELDS, WINDOW_SIZE, USE_FREQUENCY_DOMAIN
+import joblib
+# --- Inline minimal feature extractor (copied from src/feature_extractor.py)
+# Fields used by the inference worker (order matters for feature vector)
+SENSOR_FIELDS = [
+    'fields_pressure_hpa',
+    'fields_accel_x', 'fields_accel_y', 'fields_accel_z',
+    'fields_gyro_x', 'fields_gyro_y', 'fields_gyro_z'
+]
+
+# Use frequency-domain features (time-domain:5, freq-domain extra:6 per axis)
+USE_FREQUENCY_DOMAIN = False
+
+# Window size in seconds (used to size ring buffers)
+WINDOW_SIZE = 5.0
+
+from scipy.fft import rfft, rfftfreq
+from scipy.stats import skew, kurtosis
+
+def extract_features(signal, sampling_rate, use_freq_domain=USE_FREQUENCY_DOMAIN):
+    import numpy as _np
+    N = len(signal)
+    if N == 0:
+        return [0.0] * (11 if use_freq_domain else 5)
+
+    # Time-domain features
+    abs_signal = _np.abs(signal)
+    max_val = _np.max(abs_signal)
+    abs_mean = _np.mean(abs_signal)
+    std = _np.std(signal)
+    peak_to_peak = _np.ptp(signal)
+    rms = _np.sqrt(_np.mean(signal ** 2))
+    crest_factor = max_val / rms if rms > 0 else 0.0
+    impulse_factor = max_val / abs_mean if abs_mean > 0 else 0.0
+    mean_val = _np.mean(signal)
+    time_features = [std, peak_to_peak, crest_factor, impulse_factor, mean_val]
+
+    if not use_freq_domain:
+        return time_features
+
+    # Frequency-domain features
+    signal_centered = signal - _np.mean(signal)
+    spectrum = _np.abs(rfft(signal_centered))
+    freqs = rfftfreq(N, 1.0 / sampling_rate)
+    dominant_freq = freqs[_np.argmax(spectrum)] if len(spectrum) > 0 else 0.0
+    spectral_sum = _np.sum(spectrum)
+    spectral_centroid = _np.sum(freqs * spectrum) / spectral_sum if spectral_sum > 0 else 0.0
+    spectral_energy = _np.sum(spectrum ** 2)
+    spectral_kurt = kurtosis(spectrum, fisher=False) if len(spectrum) > 1 else 0.0
+    spectral_skewness = skew(spectrum) if len(spectrum) > 1 else 0.0
+    spectral_std = _np.std(spectrum)
+    freq_features = [
+        dominant_freq,
+        spectral_centroid,
+        spectral_energy,
+        spectral_kurt,
+        spectral_skewness,
+        spectral_std
+    ]
+    return time_features + freq_features
 
 # Pressure sensor (BMP085/BMP180)
 try:
@@ -102,16 +159,25 @@ SCALER_PATH = "models/scaler_if.pkl"
 def load_model_and_scaler():
     model = None
     scaler = None
+    # Prefer joblib for sklearn objects; fall back to pickle if needed
     try:
-        with open(MODEL_PATH, 'rb') as f:
-            model = pickle.load(f)
+        model = joblib.load(MODEL_PATH)
     except Exception as e:
-        print("Model load error:", e)
+        try:
+            with open(MODEL_PATH, 'rb') as f:
+                model = pickle.load(f)
+        except Exception as e2:
+            print("Model load error:", e, e2)
+            model = None
     try:
-        with open(SCALER_PATH, 'rb') as f:
-            scaler = pickle.load(f)
+        scaler = joblib.load(SCALER_PATH)
     except Exception as e:
-        print("Scaler load error:", e)
+        try:
+            with open(SCALER_PATH, 'rb') as f:
+                scaler = pickle.load(f)
+        except Exception as e2:
+            print("Scaler load error:", e, e2)
+            scaler = None
     return model, scaler
 
 inference_q = queue.Queue(maxsize=512)
