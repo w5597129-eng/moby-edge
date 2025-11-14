@@ -1,3 +1,41 @@
+# MOBY Edge Sensor Publisher
+
+간단 소개
+- 이 저장소는 라즈베리파이 기반 엣지 노드용 센서 수집 및 MQTT 퍼블리셔 스크립트 모음입니다.
+- 주요 스크립트: `src/sensor_final.py` (통합 퍼블리셔 + 비동기 인퍼런스 워커)
+
+빠른 시작
+1. (권장) 가상환경 생성 및 활성화:
+```
+python3 -m venv .venv
+source .venv/bin/activate
+```
+2. 필수 패키지 설치:
+```
+pip install -r requirements.txt
+# 하드웨어 의존성만 라즈베리파이에 설치하려면:
+pip install -r requirements-hw.txt
+```
+3. 실행:
+```
+python src/sensor_final.py
+```
+
+인퍼런스 요약 (간단)
+- 트리거: MPU6050(IMU) 윈도우가 채워지면 윈도우를 큐에 넣고 비동기 워커가 처리합니다.
+- 처리 흐름: 윈도우 → `extract_features()` → `scaler.transform()` → `model.score_samples()` / `model.predict()` → MQTT 퍼블리시
+- 발행 토픽: `factory/sensor/<sensor_type>/inference` (예: `factory/sensor/accel_gyro/inference`)
+- 페이로드: 원래 센서 페이로드에 `fields.anomaly_score` 와 `fields.anomaly_label` 추가
+
+주의 및 권장 사항
+- 재전송 버퍼(`BUFFER_DIR`)에 저장된 페이로드는 재전송 시 원래의 `/inference` 토픽이 아닌 기본 토픽으로 발행될 수 있으므로, 정확한 재전송을 위해 `publish_topic` 필드 저장을 권장합니다.
+- 모델/스케일 버전 불일치 경고가 발생할 수 있으니(직렬화 시 사용된 scikit-learn 버전과 실행 환경 버전 불일치) 모델을 현재 환경에 맞게 재저장하거나(권장) venv의 scikit-learn 버전을 모델의 버전으로 맞추세요.
+
+추가 문서
+- 인퍼런스 동작의 자세한 설명은 `docs/inference.md`에 있습니다.
+
+문의 및 다음 단계
+- README에 더 자세한 실행/디버깅 절차를 추가해 드릴까요? (예: 테스트 모드, 더미 데이터 주입 방법)
 ## 데이터 신뢰성/버퍼링
 
 MQTT 발행 실패 시 센서별 payload를 `/home/wise/deployment/data/buffer/`에 `.npy` 파일로 자동 저장합니다.

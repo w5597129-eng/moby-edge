@@ -235,6 +235,13 @@ def inference_worker(client, model, scaler, stop_event):
                 except Exception:
                     # if publish fails, save to buffer
                     save_to_buffer(sensor_type, payload)
+                # Also print inference summary to stdout for visibility
+                try:
+                    s_score = result_score if result_score is not None else 'n/a'
+                    s_label = result_label if result_label is not None else 'n/a'
+                    print(f"INFERENCE | {sensor_type} | score={s_score} label={s_label}")
+                except Exception:
+                    pass
         except Exception as e:
             print("Inference worker error:", e)
         finally:
