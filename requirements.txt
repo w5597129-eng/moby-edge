@@ -1,18 +1,7 @@
-# Minimal requirements for running sensor_final in a controlled venv
+-- Require core runtime by default and optionally hardware deps.
+-- See `requirements-core.txt` and `requirements-hw.txt`.
 
-numpy
-scipy
-pandas
-joblib
-paho-mqtt
-PyYAML
-# Use scikit-learn 1.7.2 to match models' training environment
-scikit-learn==1.7.2
+-r requirements-core.txt
 
-# Optional/hardware-specific (install on Raspberry Pi if needed):
-adafruit-blinka
-adafruit-circuitpython-dht
-adafruit-circuitpython-ads1x15
-smbus2
-RPi.GPIO
-Adafruit-BMP
+# To install hardware-specific packages on a Raspberry Pi (optional):
+# pip install -r requirements-hw.txt

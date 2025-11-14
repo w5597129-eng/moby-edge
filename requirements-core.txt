@@ -1,0 +1,10 @@
+# Core runtime requirements for local development / non-hardware
+numpy
+scipy
+pandas
+joblib
+paho-mqtt
+PyYAML
+# Pin sklearn to match model/training environment; change if you resave models
+scikit-learn==1.7.2
+threadpoolctl

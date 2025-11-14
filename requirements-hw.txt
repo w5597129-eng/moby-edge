@@ -1,0 +1,22 @@
+# Hardware-specific requirements (install on Raspberry Pi only)
+# These packages may require system libraries or root privileges.
+adafruit-blinka
+adafruit-circuitpython-dht
+adafruit-circuitpython-ads1x15
+adafruit-circuitpython-busdevice
+adafruit-circuitpython-typing
+adafruit-circuitpython-requests
+Adafruit-PlatformDetect
+Adafruit-PureIO
+Adafruit-GPIO
+Adafruit-BMP
+smbus2
+RPi.GPIO
+spidev
+# Optional adapters / extras
+pyftdi
+binho-host-adapter
+pyserial
+pyusb
+sysv_ipc
+typing-extensions
