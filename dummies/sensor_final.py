@@ -29,6 +29,10 @@ import paho.mqtt.client as mqtt
 # 버퍼 저장/재전송/정리용
 import os, glob
 import numpy as np
+import pickle, threading, queue
+from collections import deque
+# feature extraction helper from repo
+from src.feature_extractor import extract_features, SENSOR_FIELDS, WINDOW_SIZE, USE_FREQUENCY_DOMAIN
 
 # Pressure sensor (BMP085/BMP180)
 try:
@@ -88,6 +92,85 @@ def topic_for_type(sensor_type):
         "accel_gyro": TOPIC_IMU,
         "pressure": TOPIC_PRESS,
     }.get(sensor_type)
+
+# ==============================
+# Model / Inference (async worker)
+# ==============================
+MODEL_PATH = "models/isolation_forest.pkl"
+SCALER_PATH = "models/scaler_if.pkl"
+
+def load_model_and_scaler():
+    model = None
+    scaler = None
+    try:
+        with open(MODEL_PATH, 'rb') as f:
+            model = pickle.load(f)
+    except Exception as e:
+        print("Model load error:", e)
+    try:
+        with open(SCALER_PATH, 'rb') as f:
+            scaler = pickle.load(f)
+    except Exception as e:
+        print("Scaler load error:", e)
+    return model, scaler
+
+inference_q = queue.Queue(maxsize=512)
+inference_stop = threading.Event()
+
+def inference_worker(client, model, scaler, stop_event):
+    while not stop_event.is_set():
+        try:
+            sensor_type, payload, window_signals, sampling_rate = inference_q.get(timeout=1.0)
+        except queue.Empty:
+            continue
+        try:
+            feats = []
+            for field in SENSOR_FIELDS:
+                sig = window_signals.get(field)
+                if sig is None or len(sig) < 2:
+                    feat_len = 11 if USE_FREQUENCY_DOMAIN else 5
+                    feats.extend([0.0] * feat_len)
+                else:
+                    f = extract_features(np.array(sig), sampling_rate, use_freq_domain=USE_FREQUENCY_DOMAIN)
+                    feats.extend(f)
+            X = np.array(feats).reshape(1, -1)
+            if scaler is not None:
+                try:
+                    Xs = scaler.transform(X)
+                except Exception:
+                    Xs = X
+            else:
+                Xs = X
+            result_score = None
+            result_label = None
+            if model is not None:
+                try:
+                    result_score = float(model.score_samples(Xs)[0])
+                except Exception:
+                    pass
+                try:
+                    result_label = int(model.predict(Xs)[0])
+                except Exception:
+                    pass
+            if result_score is not None:
+                payload.setdefault("fields", {})["anomaly_score"] = result_score
+            if result_label is not None:
+                payload.setdefault("fields", {})["anomaly_label"] = result_label
+            base_topic = topic_for_type(sensor_type)
+            out_topic = f"{base_topic}/inference" if base_topic else None
+            if out_topic:
+                try:
+                    client.publish(out_topic, json.dumps(payload))
+                except Exception:
+                    # if publish fails, save to buffer
+                    save_to_buffer(sensor_type, payload)
+        except Exception as e:
+            print("Inference worker error:", e)
+        finally:
+            try:
+                inference_q.task_done()
+            except Exception:
+                pass
 
 TOPIC_DHT     = "factory/sensor/dht11"
 TOPIC_VIB     = "factory/sensor/vibration"
@@ -220,6 +303,21 @@ def main():
     client.connect(BROKER, PORT, 60)
     client.loop_start()
     resend_buffered(client)
+    # --- 모델/워커 초기화 ---
+    model, scaler = load_model_and_scaler()
+    # IMU sampling rate estimate
+    sampling_rate_imu = 1.0 / INTERVAL_IMU if INTERVAL_IMU > 0 else 16.0
+    buf_len = int(WINDOW_SIZE * sampling_rate_imu) + 2
+    accel_x_buf = deque(maxlen=buf_len)
+    accel_y_buf = deque(maxlen=buf_len)
+    accel_z_buf = deque(maxlen=buf_len)
+    gyro_x_buf  = deque(maxlen=buf_len)
+    gyro_y_buf  = deque(maxlen=buf_len)
+    gyro_z_buf  = deque(maxlen=buf_len)
+    # start worker thread
+    inference_stop.clear()
+    inference_thread = threading.Thread(target=inference_worker, args=(client, model, scaler, inference_stop), daemon=True)
+    inference_thread.start()
     dht = adafruit_dht.DHT11(board.D4, use_pulseio=False)
     vib_ch, sound_ch = init_ads()
     bus = smbus2.SMBus(1)
@@ -353,6 +451,35 @@ def main():
                     client.publish(TOPIC_IMU, json.dumps(payload))
                 except Exception:
                     save_to_buffer("accel_gyro", payload)
+                # append to ring buffers for windowed inference
+                try:
+                    accel_x_buf.append(ax)
+                    accel_y_buf.append(ay)
+                    accel_z_buf.append(az)
+                    gyro_x_buf.append(gx)
+                    gyro_y_buf.append(gy)
+                    gyro_z_buf.append(gz)
+                except Exception:
+                    pass
+                # enqueue window for inference when buffer full
+                try:
+                    if len(accel_x_buf) >= buf_len:
+                        window_signals = {
+                            'fields_accel_x': list(accel_x_buf),
+                            'fields_accel_y': list(accel_y_buf),
+                            'fields_accel_z': list(accel_z_buf),
+                            'fields_gyro_x':  list(gyro_x_buf),
+                            'fields_gyro_y':  list(gyro_y_buf),
+                            'fields_gyro_z':  list(gyro_z_buf),
+                        }
+                        payload_for_infer = payload.copy()
+                        try:
+                            inference_q.put_nowait(("accel_gyro", payload_for_infer, window_signals, sampling_rate_imu))
+                        except queue.Full:
+                            # drop if queue is full
+                            pass
+                except Exception:
+                    pass
                 last_line["accel_gyro"] = (
                     "MPU6050   | Ax={:+.4f} Ay={:+.4f} Az={:+.4f}  "
                     "Gx={:+.4f} Gy={:+.4f} Gz={:+.4f}".format(ax4, ay4, az4, gx4, gy4, gz4)
@@ -417,6 +544,12 @@ def main():
         time.sleep(loop_sleep)
 
     # Cleanup
+    # stop inference worker
+    try:
+        inference_stop.set()
+        inference_thread.join(timeout=1.0)
+    except Exception:
+        pass
     client.loop_stop()
     client.disconnect()
     bus.close()
