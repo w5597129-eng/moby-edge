@@ -5,7 +5,8 @@ import copy
 import json
 import os
 import pickle
-from typing import Any, Dict, Iterable
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import joblib
 import numpy as np
@@ -19,17 +20,55 @@ from inference_interface import (
     SENSOR_FIELDS,
     USE_FREQUENCY_DOMAIN,
     current_timestamp_ns,
+    model_result_topic,
     result_topic,
     WINDOW_TOPIC_ROOT,
 )
 
-_DEFAULT_MODEL_PATH = "models/isolation_forest.pkl"
-_DEFAULT_SCALER_PATH = "models/scaler_if.pkl"
-_RESAVED_MODEL_PATH = "models/resaved_isolation_forest.joblib"
-_RESAVED_SCALER_PATH = "models/resaved_scaler.joblib"
 
-MODEL_PATH = _RESAVED_MODEL_PATH if os.path.exists(_RESAVED_MODEL_PATH) else _DEFAULT_MODEL_PATH
-SCALER_PATH = _RESAVED_SCALER_PATH if os.path.exists(_RESAVED_SCALER_PATH) else _DEFAULT_SCALER_PATH
+def _resolve_path(*candidates: str) -> str:
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
+@dataclass
+class ModelConfig:
+    name: str
+    sensor_type: str
+    model_path: str
+    scaler_path: Optional[str] = None
+    result_topic_override: Optional[str] = None
+    score_field: str = "anomaly_score"
+    label_field: str = "anomaly_label"
+    feature_pipeline: str = "identity"
+    max_retries: int = 2
+
+    def result_topic(self) -> str:
+        if self.result_topic_override:
+            return self.result_topic_override
+        return model_result_topic(self.sensor_type, self.name)
+
+
+DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
+    ModelConfig(
+        name="isolation_forest",
+        sensor_type="accel_gyro",
+        model_path=_resolve_path(
+            "models/resaved_isolation_forest.joblib",
+            "models/isolation_forest.pkl",
+        ),
+        scaler_path=_resolve_path(
+            "models/resaved_scaler.joblib",
+            "models/scaler_if.pkl",
+        ),
+        score_field="iforest_score",
+        label_field="iforest_label",
+        feature_pipeline="unit_norm",
+        max_retries=3,
+    )
+]
 
 
 def _make_mqtt_client(client_id: str) -> mqtt.Client:
@@ -84,36 +123,145 @@ def extract_features(signal: Iterable[float], sampling_rate: float, use_freq_dom
         spectral_std,
     ]
     return time_features + freq_features
+FEATURE_PIPELINES: Dict[str, Callable[[np.ndarray], np.ndarray]] = {}
 
 
-def load_model_and_scaler():
-    model = None
-    scaler = None
+def feature_pipeline(name: str) -> Callable[[np.ndarray], np.ndarray]:
+    if name not in FEATURE_PIPELINES:
+        raise KeyError(f"Unknown feature pipeline: {name}")
+    return FEATURE_PIPELINES[name]
+
+
+def register_feature_pipeline(name: str):
+    def decorator(func: Callable[[np.ndarray], np.ndarray]) -> Callable[[np.ndarray], np.ndarray]:
+        FEATURE_PIPELINES[name] = func
+        return func
+
+    return decorator
+
+
+@register_feature_pipeline("identity")
+def _identity_pipeline(features: np.ndarray) -> np.ndarray:
+    return features
+
+
+@register_feature_pipeline("unit_norm")
+def _unit_norm_pipeline(features: np.ndarray) -> np.ndarray:
+    norm = np.linalg.norm(features)
+    if norm == 0:
+        return features
+    return features / norm
+
+
+def _load_artifact(path: Optional[str]):
+    if not path:
+        return None
     try:
-        model = joblib.load(MODEL_PATH)
+        return joblib.load(path)
     except Exception:
         try:
-            with open(MODEL_PATH, "rb") as fh:
-                model = pickle.load(fh)
+            with open(path, "rb") as fh:
+                return pickle.load(fh)
         except Exception as exc:
-            print("Model load error:", exc)
-            model = None
-    try:
-        scaler = joblib.load(SCALER_PATH)
-    except Exception:
-        try:
-            with open(SCALER_PATH, "rb") as fh:
-                scaler = pickle.load(fh)
-        except Exception as exc:
-            print("Scaler load error:", exc)
-            scaler = None
-    return model, scaler
+            print(f"Artifact load error ({path}):", exc)
+            return None
+
+
+class ModelRunner:
+    def __init__(
+        self,
+        config: ModelConfig,
+        model: Optional[Any] = None,
+        scaler: Optional[Any] = None,
+    ):
+        self.config = config
+        self.model = model
+        self.scaler = scaler
+        if self.model is None and self.config.model_path:
+            self.reload_artifacts()
+        elif self.scaler is None and self.config.scaler_path:
+            self.scaler = _load_artifact(self.config.scaler_path)
+
+    def reload_artifacts(self):
+        loaded_model = _load_artifact(self.config.model_path)
+        if loaded_model is not None:
+            self.model = loaded_model
+        loaded_scaler = _load_artifact(self.config.scaler_path)
+        if loaded_scaler is not None:
+            self.scaler = loaded_scaler
+
+    def _prepare_features(self, features: np.ndarray) -> np.ndarray:
+        prepared = np.asarray(features, dtype=float)
+        if prepared.ndim == 1:
+            prepared = prepared.reshape(1, -1)
+        pipeline_fn = feature_pipeline(self.config.feature_pipeline)
+        prepared = pipeline_fn(prepared)
+        if self.scaler is not None:
+            try:
+                prepared = self.scaler.transform(prepared)
+            except Exception as exc:
+                print(f"Scaler transform error ({self.config.name}):", exc)
+        return prepared
+
+    def _run_once(self, window_msg: WindowMessage, features: np.ndarray) -> InferenceResultMessage:
+        prepared = self._prepare_features(features)
+        score = None
+        label = None
+        if self.model is not None:
+            try:
+                score = float(self.model.score_samples(prepared)[0])
+            except Exception as exc:
+                print(f"Model score error ({self.config.name}):", exc)
+            try:
+                label = int(self.model.predict(prepared)[0])
+            except Exception as exc:
+                print(f"Model predict error ({self.config.name}):", exc)
+        context_payload: Dict[str, Any] = copy.deepcopy(window_msg.context_payload) if isinstance(window_msg.context_payload, dict) else {}
+        context_fields = context_payload.setdefault("fields", {})
+        if score is not None:
+            context_fields[self.config.score_field] = score
+        if label is not None:
+            context_fields[self.config.label_field] = label
+        context_payload.setdefault("timestamp_ns", window_msg.timestamp_ns or current_timestamp_ns())
+        return InferenceResultMessage(
+            sensor_type=window_msg.sensor_type,
+            score=score,
+            label=label,
+            model_name=self.config.name,
+            timestamp_ns=current_timestamp_ns(),
+            context_payload=context_payload,
+        )
+
+    def run(self, window_msg: WindowMessage, features: np.ndarray) -> InferenceResultMessage:
+        attempts = 0
+        last_error: Optional[Exception] = None
+        while attempts < max(1, self.config.max_retries):
+            try:
+                return self._run_once(window_msg, features)
+            except Exception as exc:
+                last_error = exc
+                attempts += 1
+                print(f"Model {self.config.name} inference failed (attempt {attempts}): {exc}")
+                self.reload_artifacts()
+        context_payload = copy.deepcopy(window_msg.context_payload) if isinstance(window_msg.context_payload, dict) else {}
+        context_fields = context_payload.setdefault("fields", {})
+        context_fields[f"{self.config.name}_error"] = str(last_error) if last_error else "unknown"
+        return InferenceResultMessage(
+            sensor_type=window_msg.sensor_type,
+            score=None,
+            label=None,
+            model_name=self.config.name,
+            timestamp_ns=current_timestamp_ns(),
+            context_payload=context_payload,
+        )
+
+    def result_topic(self) -> str:
+        return self.config.result_topic()
 
 
 class InferenceEngine:
-    def __init__(self, model=None, scaler=None):
-        self.model = model
-        self.scaler = scaler
+    def __init__(self, runners: Optional[List[ModelRunner]] = None):
+        self.runners = runners or []
 
     def _build_feature_vector(self, window_msg: WindowMessage) -> np.ndarray:
         feats = []
@@ -126,52 +274,24 @@ class InferenceEngine:
                 feats.extend(extract_features(sig, window_msg.sampling_rate_hz, USE_FREQUENCY_DOMAIN))
         return np.asarray(feats, dtype=float).reshape(1, -1)
 
-    def process_window(self, window_msg: WindowMessage) -> InferenceResultMessage:
-        X = self._build_feature_vector(window_msg)
-        Xs = X
-        if self.scaler is not None:
-            try:
-                Xs = self.scaler.transform(X)
-            except Exception:
-                Xs = X
-        score = None
-        label = None
-        if self.model is not None:
-            try:
-                score = float(self.model.score_samples(Xs)[0])
-            except Exception:
-                pass
-            try:
-                label = int(self.model.predict(Xs)[0])
-            except Exception:
-                pass
-        context = window_msg.context_payload or {
-            "sensor_type": window_msg.sensor_type,
-            "fields": {},
-            "timestamp_ns": window_msg.timestamp_ns or current_timestamp_ns(),
-        }
-        # Copy context to avoid mutating shared dict
-        context_payload: Dict[str, Any] = copy.deepcopy(context) if isinstance(context, dict) else {}
-        context_fields = context_payload.setdefault("fields", {})
-        if score is not None:
-            context_fields["anomaly_score"] = score
-        if label is not None:
-            context_fields["anomaly_label"] = label
-        context_payload.setdefault("timestamp_ns", window_msg.timestamp_ns or current_timestamp_ns())
-        return InferenceResultMessage(
-            sensor_type=window_msg.sensor_type,
-            score=score,
-            label=label,
-            timestamp_ns=current_timestamp_ns(),
-            context_payload=context_payload,
-        )
+    def process_window(self, window_msg: WindowMessage) -> List[InferenceResultMessage]:
+        features = self._build_feature_vector(window_msg)
+        results: List[InferenceResultMessage] = []
+        for runner in self.runners:
+            results.append(runner.run(window_msg, features))
+        return results
+
+
+def build_default_engine() -> InferenceEngine:
+    runners = [ModelRunner(config) for config in DEFAULT_MODEL_CONFIGS]
+    return InferenceEngine(runners)
 
 
 class MQTTInferenceWorker:
     def __init__(self, broker: str = "localhost", port: int = 1883):
         self.broker = broker
         self.port = port
-        self.engine = InferenceEngine(*load_model_and_scaler())
+        self.engine = build_default_engine()
         self.client = _make_mqtt_client("sensor_inference_worker")
         self.client.on_message = self._on_message
         self.client.on_connect = self._on_connect
@@ -184,11 +304,16 @@ class MQTTInferenceWorker:
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
             window_msg = WindowMessage.from_payload(payload)
-            result = self.engine.process_window(window_msg)
-            client.publish(result_topic(result.sensor_type), json.dumps(result.to_payload()))
-            print(
-                f"INFERENCE | {result.sensor_type} | score={result.score} label={result.label}"
-            )
+            results = self.engine.process_window(window_msg)
+            for result in results:
+                topic = result_topic(result.sensor_type)
+                if result.model_name:
+                    topic = model_result_topic(result.sensor_type, result.model_name)
+                client.publish(topic, json.dumps(result.to_payload()))
+                print(
+                    f"INFERENCE | {result.sensor_type} | model={result.model_name} "
+                    f"score={result.score} label={result.label}"
+                )
         except Exception as exc:
             print("Inference MQTT handler error:", exc)
 
