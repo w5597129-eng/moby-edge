@@ -20,7 +20,7 @@ CYCLE_SEC = 3.63
 
 # Duty settings
 NORMAL_DUTY = 75        # normal speed duty
-DIP_DUTY = 40           # slowed-down duty (do not use 0)
+DIP_DUTY = 30           # slowed-down duty (do not use 0)  # red_30 yellow_50
 
 # Where in the cycle the dip happens (0.0 ~ 1.0)
 # Example: dip starts at 40% of the cycle and lasts 20% of the cycle
