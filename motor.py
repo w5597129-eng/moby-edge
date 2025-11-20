@@ -13,8 +13,8 @@ AIN2 = 22
 PWMA = 18
 STBY = 23
 
-PWM_FREQ = 100     # Hz
-DUTY = 75          # 0..100 (%), set your steady speed here
+PWM_FREQ = 75     # Hz
+DUTY = 100          # 0..100 (%), set your steady speed here
 
 stop_flag = False
 
