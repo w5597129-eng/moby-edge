@@ -19,8 +19,16 @@ except Exception:
     # fallback: local implementation will be used (defined below if necessary)
     extract_features = None
 import paho.mqtt.client as mqtt
-import torch
-import torch.nn as nn
+try:
+    import torch
+    import torch.nn as nn
+except Exception:
+    torch = None
+    nn = None
+try:
+    import onnxruntime as ort
+except Exception:
+    ort = None
 
 from inference_interface import (
     InferenceResultMessage,
@@ -81,6 +89,7 @@ DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
         name="mlp_classifier",
         sensor_type="accel_gyro",
         model_path=_resolve_path(
+            "models/mlp_classifier.onnx",
             "models/mlp_classifier.pth",
             "models/mlp_classifier.pt",
         ),
@@ -96,59 +105,110 @@ DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
 ]
 
 
-class MLPClassifier(nn.Module):
-    def __init__(self, input_size, hidden_sizes=(64, 32), output_size=2):
-        super(MLPClassifier, self).__init__()
-        self.fc1 = nn.Linear(input_size, hidden_sizes[0])
-        self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
-        self.fc3 = nn.Linear(hidden_sizes[1], output_size)
-        self.relu = nn.ReLU()
-        self.sigmoid = nn.Sigmoid()
+if nn is not None:
+    class MLPClassifier(nn.Module):
+        def __init__(self, input_size, hidden_sizes=(64, 32), output_size=2):
+            super(MLPClassifier, self).__init__()
+            self.fc1 = nn.Linear(input_size, hidden_sizes[0])
+            self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
+            self.fc3 = nn.Linear(hidden_sizes[1], output_size)
+            self.relu = nn.ReLU()
+            self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x):
-        x = self.relu(self.fc1(x))
-        x = self.relu(self.fc2(x))
-        x = self.sigmoid(self.fc3(x))
-        return x
+        def forward(self, x):
+            x = self.relu(self.fc1(x))
+            x = self.relu(self.fc2(x))
+            x = self.sigmoid(self.fc3(x))
+            return x
 
 
-class TorchMLPWrapper:
-    """Wraps a PyTorch MLP model checkpoint (or nn.Module) to provide
-    `predict` and `score_samples` like scikit-learn estimators expected by ModelRunner.
+    class TorchMLPWrapper:
+        """Wraps a PyTorch MLP model checkpoint (or nn.Module) to provide
+        `predict` and `score_samples` like scikit-learn estimators expected by ModelRunner.
 
-    - `score_samples(X)` returns an anomaly score (float) per sample.
-    - `predict(X)` returns integer label per sample (0=normal, 1=anomaly).
+        - `score_samples(X)` returns an anomaly score (float) per sample.
+        - `predict(X)` returns integer label per sample (0=normal, 1=anomaly).
+        """
+
+        def __init__(self, model: nn.Module, device: Optional[torch.device] = None):
+            self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+            self.model = model.to(self.device)
+            self.model.eval()
+
+        def _predict_proba(self, X: np.ndarray) -> np.ndarray:
+            if X is None:
+                return np.zeros((0, 2))
+            with torch.no_grad():
+                tx = torch.from_numpy(np.asarray(X, dtype=np.float32)).to(self.device)
+                if tx.dim() == 1:
+                    tx = tx.unsqueeze(0)
+                out = self.model(tx)
+                proba = out.cpu().numpy()
+            return proba
+
+        def score_samples(self, X: np.ndarray) -> np.ndarray:
+            # Use L2 norm of probability vector as a simple anomaly score
+            proba = self._predict_proba(X)
+            if proba.size == 0:
+                return np.array([])
+            mag = np.linalg.norm(proba, axis=1)
+            return mag
+
+        def predict(self, X: np.ndarray) -> np.ndarray:
+            proba = self._predict_proba(X)
+            if proba.size == 0:
+                return np.array([])
+            # label 1 if any anomaly-dimension probability > 0.5, else 0
+            binvec = (proba > 0.5).astype(int)
+            labels = np.any(binvec, axis=1).astype(int)
+            return labels
+else:
+    # Torch not available — provide lightweight stubs that explain the situation
+    class MLPClassifier:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("PyTorch is not installed in this environment; export the model to ONNX and use ONNX Runtime on this platform.")
+
+
+    class TorchMLPWrapper:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("PyTorch is not installed in this environment; cannot wrap a torch model. Use ONNX instead.")
+
+
+class ONNXMLPWrapper:
+    """Wraps an exported ONNX MLP model via onnxruntime.InferenceSession.
+
+    Provides `score_samples` and `predict` methods compatible with ModelRunner.
     """
 
-    def __init__(self, model: nn.Module, device: Optional[torch.device] = None):
-        self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
-        self.model = model.to(self.device)
-        self.model.eval()
+    def __init__(self, onnx_path: str, providers: Optional[list] = None):
+        if ort is None:
+            raise RuntimeError("onnxruntime not available; install onnxruntime to use ONNX models")
+        self.onnx_path = onnx_path
+        opts = {}
+        self.session = ort.InferenceSession(onnx_path, providers=providers or None)
+        # Determine input name
+        self.input_name = self.session.get_inputs()[0].name
+        self.output_name = self.session.get_outputs()[0].name
 
     def _predict_proba(self, X: np.ndarray) -> np.ndarray:
         if X is None:
             return np.zeros((0, 2))
-        with torch.no_grad():
-            tx = torch.from_numpy(np.asarray(X, dtype=np.float32)).to(self.device)
-            if tx.dim() == 1:
-                tx = tx.unsqueeze(0)
-            out = self.model(tx)
-            proba = out.cpu().numpy()
-        return proba
+        arr = np.asarray(X, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        res = self.session.run([self.output_name], {self.input_name: arr})[0]
+        return np.asarray(res)
 
     def score_samples(self, X: np.ndarray) -> np.ndarray:
-        # Use L2 norm of probability vector as a simple anomaly score
         proba = self._predict_proba(X)
         if proba.size == 0:
             return np.array([])
-        mag = np.linalg.norm(proba, axis=1)
-        return mag
+        return np.linalg.norm(proba, axis=1)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         proba = self._predict_proba(X)
         if proba.size == 0:
             return np.array([])
-        # label 1 if any anomaly-dimension probability > 0.5, else 0
         binvec = (proba > 0.5).astype(int)
         labels = np.any(binvec, axis=1).astype(int)
         return labels
@@ -271,7 +331,17 @@ class ModelRunner:
             self.scaler = _load_artifact(self.config.scaler_path)
 
     def reload_artifacts(self):
-        loaded_model = _load_artifact(self.config.model_path)
+        # If an ONNX file is specified, prefer creating an ONNX wrapper directly
+        model_path = self.config.model_path
+        if model_path and os.path.exists(model_path) and os.path.splitext(model_path)[1].lower() == ".onnx":
+            try:
+                self.model = ONNXMLPWrapper(model_path)
+            except Exception as exc:
+                print(f"Failed to load ONNX model ({model_path}): {exc}")
+                self.model = None
+            loaded_model = None
+        else:
+            loaded_model = _load_artifact(self.config.model_path)
         if loaded_model is not None:
             # Torch checkpoint saved as a dict with model_state_dict
             if isinstance(loaded_model, dict) and "model_state_dict" in loaded_model:
