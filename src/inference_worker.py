@@ -130,8 +130,9 @@ if nn is not None:
         - `predict(X)` returns integer label per sample (0=normal, 1=anomaly).
         """
 
-        def __init__(self, model: nn.Module, device: Optional[torch.device] = None):
+        def __init__(self, model: Any, device: Optional[Any] = None):
             self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+            # model may be any object providing .to() and .eval(); avoid strict nn.Module annotation
             self.model = model.to(self.device)
             self.model.eval()
 
