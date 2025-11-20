@@ -28,69 +28,16 @@ import paho.mqtt.client as mqtt
 
 # 버퍼 저장/재전송/정리용 (파일 기반 -> 메모리 기반으로 변경)
 import os
-import numpy as np
-import pickle, threading, queue
+import threading
 from collections import deque
-import joblib
-# --- Inline minimal feature extractor (copied from src/feature_extractor.py)
-# Fields used by the inference worker (order matters for feature vector)
-SENSOR_FIELDS = [
-    'fields_pressure_hpa',
-    'fields_accel_x', 'fields_accel_y', 'fields_accel_z',
-    'fields_gyro_x', 'fields_gyro_y', 'fields_gyro_z'
-]
 
-# Use frequency-domain features (time-domain:5, freq-domain extra:6 per axis)
-USE_FREQUENCY_DOMAIN = True
-
-# Window size in seconds (used to size ring buffers)
-WINDOW_SIZE = 5.0
-
-from scipy.fft import rfft, rfftfreq
-from scipy.stats import skew, kurtosis
-
-def extract_features(signal, sampling_rate, use_freq_domain=USE_FREQUENCY_DOMAIN):
-    import numpy as _np
-    N = len(signal)
-    if N == 0:
-        return [0.0] * (11 if use_freq_domain else 5)
-
-    # Time-domain features
-    abs_signal = _np.abs(signal)
-    max_val = _np.max(abs_signal)
-    abs_mean = _np.mean(abs_signal)
-    std = _np.std(signal)
-    peak_to_peak = _np.ptp(signal)
-    rms = _np.sqrt(_np.mean(signal ** 2))
-    crest_factor = max_val / rms if rms > 0 else 0.0
-    impulse_factor = max_val / abs_mean if abs_mean > 0 else 0.0
-    mean_val = _np.mean(signal)
-    time_features = [std, peak_to_peak, crest_factor, impulse_factor, mean_val]
-
-    if not use_freq_domain:
-        return time_features
-
-    # Frequency-domain features
-    signal_centered = signal - _np.mean(signal)
-    spectrum = _np.abs(rfft(signal_centered))
-    freqs = rfftfreq(N, 1.0 / sampling_rate)
-    dominant_freq = freqs[_np.argmax(spectrum)] if len(spectrum) > 0 else 0.0
-    spectral_sum = _np.sum(spectrum)
-    spectral_centroid = _np.sum(freqs * spectrum) / spectral_sum if spectral_sum > 0 else 0.0
-    spectral_energy = _np.sum(spectrum ** 2)
-    spectral_kurt = kurtosis(spectrum, fisher=False) if len(spectrum) > 1 else 0.0
-    spectral_skewness = skew(spectrum) if len(spectrum) > 1 else 0.0
-    spectral_std = _np.std(spectrum)
-    freq_features = [
-        dominant_freq,
-        spectral_centroid,
-        spectral_energy,
-        spectral_kurt,
-        spectral_skewness,
-        spectral_std
-    ]
-    return time_features + freq_features
-
+from inference_interface import (
+    InferenceResultMessage,
+    WindowMessage,
+    WINDOW_SIZE,
+    RESULT_TOPIC_ROOT,
+    window_topic,
+)
 # Pressure sensor (BMP085/BMP180)
 try:
     import Adafruit_BMP.BMP085 as BMP085  # pip3 install Adafruit-BMP
@@ -155,45 +102,33 @@ def topic_for_type(sensor_type):
         "pressure": TOPIC_PRESS,
     }.get(sensor_type)
 
-# ==============================
-# Model / Inference (async worker)
-# ==============================
-_DEFAULT_MODEL_PATH = "models/isolation_forest.pkl"
-_DEFAULT_SCALER_PATH = "models/scaler_if.pkl"
-_RESAVED_MODEL_PATH = "models/resaved_isolation_forest.joblib"
-_RESAVED_SCALER_PATH = "models/resaved_scaler.joblib"
-# Prefer resaved joblib files if present (created by scripts/resave_models.py)
-MODEL_PATH = _RESAVED_MODEL_PATH if os.path.exists(_RESAVED_MODEL_PATH) else _DEFAULT_MODEL_PATH
-SCALER_PATH = _RESAVED_SCALER_PATH if os.path.exists(_RESAVED_SCALER_PATH) else _DEFAULT_SCALER_PATH
 
-def load_model_and_scaler():
-    model = None
-    scaler = None
-    # Prefer joblib for sklearn objects; fall back to pickle if needed
-    try:
-        model = joblib.load(MODEL_PATH)
-    except Exception as e:
+def _on_mqtt_connect(client, userdata, flags, rc):
+    if rc == 0:
         try:
-            with open(MODEL_PATH, 'rb') as f:
-                model = pickle.load(f)
-        except Exception as e2:
-            print("Model load error:", e, e2)
-            model = None
+            client.subscribe(f"{RESULT_TOPIC_ROOT}/#")
+        except Exception:
+            pass
+
+
+def _on_mqtt_message(client, userdata, msg):
+    if not msg.topic.startswith(RESULT_TOPIC_ROOT):
+        return
     try:
-        scaler = joblib.load(SCALER_PATH)
-    except Exception as e:
-        try:
-            with open(SCALER_PATH, 'rb') as f:
-                scaler = pickle.load(f)
-        except Exception as e2:
-            print("Scaler load error:", e, e2)
-            scaler = None
-    return model, scaler
+        payload = json.loads(msg.payload.decode("utf-8"))
+        result = InferenceResultMessage.from_payload(payload)
+    except Exception:
+        return
+    try:
+        with inference_results_lock:
+            inference_results[result.sensor_type] = {
+                "score": result.score,
+                "label": result.label,
+                "timestamp_ns": result.timestamp_ns or now_ns(),
+            }
+    except Exception:
+        pass
 
-inference_q = queue.Queue(maxsize=512)
-inference_stop = threading.Event()
-
-# Latest inference results (in-memory, thread-safe)
 inference_results = {}
 inference_results_lock = threading.Lock()
 
@@ -211,80 +146,12 @@ def infer_summary_str(sensor_type):
     label_s = str(s_label) if s_label is not None else "n/a"
     return f"  [INF] score={score_s} label={label_s}"
 
-def inference_worker(client, model, scaler, stop_event):
-    while not stop_event.is_set():
-        try:
-            sensor_type, payload, window_signals, sampling_rate = inference_q.get(timeout=1.0)
-        except queue.Empty:
-            continue
-        try:
-            feats = []
-            for field in SENSOR_FIELDS:
-                sig = window_signals.get(field)
-                if sig is None or len(sig) < 2:
-                    feat_len = 11 if USE_FREQUENCY_DOMAIN else 5
-                    feats.extend([0.0] * feat_len)
-                else:
-                    f = extract_features(np.array(sig), sampling_rate, use_freq_domain=USE_FREQUENCY_DOMAIN)
-                    feats.extend(f)
-            X = np.array(feats).reshape(1, -1)
-            if scaler is not None:
-                try:
-                    Xs = scaler.transform(X)
-                except Exception:
-                    Xs = X
-            else:
-                Xs = X
-            result_score = None
-            result_label = None
-            if model is not None:
-                try:
-                    result_score = float(model.score_samples(Xs)[0])
-                except Exception:
-                    pass
-                try:
-                    result_label = int(model.predict(Xs)[0])
-                except Exception:
-                    pass
-            if result_score is not None:
-                payload.setdefault("fields", {})["anomaly_score"] = result_score
-            if result_label is not None:
-                payload.setdefault("fields", {})["anomaly_label"] = result_label
-            base_topic = topic_for_type(sensor_type)
-            out_topic = f"{base_topic}/inference" if base_topic else None
-            if out_topic:
-                # record latest inference in-memory for display
-                try:
-                    with inference_results_lock:
-                        inference_results[sensor_type] = {
-                            "score": result_score,
-                            "label": result_label,
-                            "timestamp_ns": now_ns()
-                        }
-                except Exception:
-                    pass
-                # publish inference result (use memory buffer on failure)
-                buffer_publish(client, out_topic, payload)
-                # Also print inference summary to stdout for visibility
-                try:
-                    s_score = result_score if result_score is not None else 'n/a'
-                    s_label = result_label if result_label is not None else 'n/a'
-                    print(f"INFERENCE | {sensor_type} | score={s_score} label={s_label}")
-                except Exception:
-                    pass
-        except Exception as e:
-            print("Inference worker error:", e)
-        finally:
-            try:
-                inference_q.task_done()
-            except Exception:
-                pass
-
 TOPIC_DHT     = "factory/sensor/dht11"
 TOPIC_VIB     = "factory/sensor/vibration"
 TOPIC_SOUND   = "factory/sensor/sound"
 TOPIC_IMU     = "factory/sensor/accel_gyro"
 TOPIC_PRESS   = "factory/sensor/pressure"
+TOPIC_IMU_WINDOWS = window_topic("accel_gyro")
 
 # Sampling configuration
 # Preferred: specify sampling frequency in Hz (FREQ_*). If you want to keep
@@ -428,11 +295,11 @@ def now_ns():
 def main():
     # 루프 시작: 메모리 기반 publish 재전송 스레드 시작
     client = _make_mqtt_client("sensor_pub_all")
+    client.on_connect = _on_mqtt_connect
+    client.on_message = _on_mqtt_message
     client.connect(BROKER, PORT, 60)
     client.loop_start()
     start_publish_resender(client)
-    # --- 모델/워커 초기화 ---
-    model, scaler = load_model_and_scaler()
     # IMU sampling rate estimate
     sampling_rate_imu = 1.0 / INTERVAL_IMU if INTERVAL_IMU > 0 else 16.0
     buf_len = int(WINDOW_SIZE * sampling_rate_imu) + 2
@@ -442,10 +309,6 @@ def main():
     gyro_x_buf  = deque(maxlen=buf_len)
     gyro_y_buf  = deque(maxlen=buf_len)
     gyro_z_buf  = deque(maxlen=buf_len)
-    # start worker thread
-    inference_stop.clear()
-    inference_thread = threading.Thread(target=inference_worker, args=(client, model, scaler, inference_stop), daemon=True)
-    inference_thread.start()
     dht = adafruit_dht.DHT11(board.D4, use_pulseio=False)
     vib_ch, sound_ch = init_ads()
     bus = smbus2.SMBus(1)
@@ -590,12 +453,14 @@ def main():
                             'fields_gyro_y':  list(gyro_y_buf),
                             'fields_gyro_z':  list(gyro_z_buf),
                         }
-                        payload_for_infer = payload.copy()
-                        try:
-                            inference_q.put_nowait(("accel_gyro", payload_for_infer, window_signals, sampling_rate_imu))
-                        except queue.Full:
-                            # drop if queue is full
-                            pass
+                        window_msg = WindowMessage(
+                            sensor_type="accel_gyro",
+                            sampling_rate_hz=sampling_rate_imu,
+                            window_fields=window_signals,
+                            timestamp_ns=payload.get("timestamp_ns"),
+                            context_payload=payload,
+                        )
+                        buffer_publish(client, TOPIC_IMU_WINDOWS, window_msg.to_payload())
                 except Exception:
                     pass
                 last_line["accel_gyro"] = (
@@ -661,12 +526,6 @@ def main():
         time.sleep(loop_sleep)
 
     # Cleanup
-    # stop inference worker
-    try:
-        inference_stop.set()
-        inference_thread.join(timeout=1.0)
-    except Exception:
-        pass
     client.loop_stop()
     client.disconnect()
     bus.close()
