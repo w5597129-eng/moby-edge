@@ -417,6 +417,86 @@ class InferenceEngine:
         self.runners = runners or []
 
     def _build_feature_vector(self, window_msg: WindowMessage) -> np.ndarray:
+        # Prefer the new multi-axis feature extractor (v17) when available.
+        try:
+            from feature_extractor import extract_features_v17, FEATURE_CONFIG_V17
+        except Exception:
+            extract_features_v17 = None
+            FEATURE_CONFIG_V17 = None
+
+        # If v17 extractor is available, build sensor-level dict (accel/gyro/pressure)
+        if extract_features_v17 is not None:
+            wf = window_msg.window_fields or {}
+            data_dict = {}
+            sr = float(window_msg.sampling_rate_hz)
+
+            # Accel 3-axis
+            accel_cols = ['fields_accel_x', 'fields_accel_y', 'fields_accel_z']
+            if all(col in wf and wf[col] is not None for col in accel_cols):
+                try:
+                    arrays = [np.asarray(wf[col], dtype=float) for col in accel_cols]
+                    min_len = min(a.size for a in arrays)
+                    if min_len >= 2:
+                        stacked = np.column_stack([a[-min_len:] for a in arrays])
+                        valid_mask = ~np.isnan(stacked).any(axis=1)
+                        if valid_mask.sum() > 0:
+                            data_dict['accel'] = stacked[valid_mask]
+                except Exception:
+                    pass
+
+            # Gyro 3-axis
+            gyro_cols = ['fields_gyro_x', 'fields_gyro_y', 'fields_gyro_z']
+            if all(col in wf and wf[col] is not None for col in gyro_cols):
+                try:
+                    arrays = [np.asarray(wf[col], dtype=float) for col in gyro_cols]
+                    min_len = min(a.size for a in arrays)
+                    if min_len >= 2:
+                        stacked = np.column_stack([a[-min_len:] for a in arrays])
+                        valid_mask = ~np.isnan(stacked).any(axis=1)
+                        if valid_mask.sum() > 0:
+                            data_dict['gyro'] = stacked[valid_mask]
+                except Exception:
+                    pass
+
+            # Pressure (optional)
+            if 'fields_pressure_hpa' in wf and wf.get('fields_pressure_hpa') is not None:
+                try:
+                    arr = np.asarray(wf['fields_pressure_hpa'], dtype=float)
+                    arr = arr[~np.isnan(arr)]
+                    if arr.size > 0:
+                        data_dict['pressure'] = arr
+                except Exception:
+                    pass
+
+            # Temperature (if provided)
+            if 'fields_temperature_c' in wf and wf.get('fields_temperature_c') is not None:
+                try:
+                    arr = np.asarray(wf['fields_temperature_c'], dtype=float)
+                    arr = arr[~np.isnan(arr)]
+                    if arr.size > 0:
+                        data_dict['temperature'] = arr
+                except Exception:
+                    pass
+
+            if data_dict:
+                try:
+                    feats_dict = extract_features_v17(data_dict, sr)
+                    # Build deterministic feature order using FEATURE_CONFIG_V17 if available
+                    ordered_keys = []
+                    if FEATURE_CONFIG_V17 is not None:
+                        for sensor_key in ('accel', 'gyro', 'pressure', 'temperature'):
+                            for fname in FEATURE_CONFIG_V17.get(sensor_key, []):
+                                ordered_keys.append(f"{sensor_key}_{fname}")
+                    else:
+                        ordered_keys = sorted(feats_dict.keys())
+
+                    vec = [float(feats_dict.get(k, 0.0)) for k in ordered_keys]
+                    return np.asarray(vec, dtype=float).reshape(1, -1)
+                except Exception:
+                    # Fall back to legacy per-field extraction below
+                    pass
+
+        # Legacy per-field extractor fallback (unchanged behavior)
         feats = []
         for field in SENSOR_FIELDS:
             sig = window_msg.window_fields.get(field)
