@@ -7,7 +7,7 @@
 - `src/sensor_final.py` : 통합 센서 퍼블리셔 및 터미널 출력(하드웨어 필요).
 - `src/inference_interface.py` : 센서 퍼블리셔와 워커가 공유하는 메시지/토픽 스키마(라이브러리 모듈, 실행 불필요).
 - `src/inference_worker.py` : MQTT로 윈도우를 구독해 모델을 실행하고 결과를 퍼블리시하는 독립 실행형 워커.
-- `models/` : 학습된 모델·스케일러 파일 (예: `resaved_isolation_forest.joblib`, `resaved_scaler.joblib`).
+- `models/` : 학습된 모델·스케일러 파일 (예: `isolation_forest.joblib`, `scaler_if.joblib`).
 - `scripts/resave_models.py` : 기존 모델/스케일러를 로드해 joblib로 재저장하는 편리한 스크립트.
 
 빠른 시작
@@ -59,7 +59,7 @@ mosquitto_sub -h localhost -t "factory/inference/results/#" -v
 ```
 
 모델/스케일러 파일
-- 워커는 기본적으로 `models/resaved_isolation_forest.joblib` 및 `models/resaved_scaler.joblib` 같은 파일을 찾습니다. 상대 경로는 리포지토리 루트를 기준으로 해석되므로 `cd /home/wise/python`에서 실행하세요.
+- 워커는 기본적으로 `models/isolation_forest.joblib` 및 `models/scaler_if.joblib` 같은 파일을 찾습니다. 상대 경로는 리포지토리 루트를 기준으로 해석되므로 `cd /home/wise/python`에서 실행하세요.
 - 모델이 현재 환경에서 로드되지 않으면 `scripts/resave_models.py`로 재저장하거나, 필요한 라이브러리(scikit-learn 등)를 venv에 맞게 설치해야 합니다.
 
 동작 요약

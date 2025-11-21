@@ -8,8 +8,8 @@ Script: resave_models.py
 Usage:
     python3 scripts/resave_models.py
 
-This will create `models/resaved_isolation_forest.joblib` and
-`models/resaved_scaler.joblib` if successful.
+This will create `models/isolation_forest.joblib` and
+`models/scaler_if.joblib` if successful.
 """
 import os
 import sys
@@ -20,8 +20,8 @@ import pickle
 
 MODEL_PATH = os.path.join('models', 'isolation_forest.pkl')
 SCALER_PATH = os.path.join('models', 'scaler_if.pkl')
-OUT_MODEL = os.path.join('models', 'resaved_isolation_forest.joblib')
-OUT_SCALER = os.path.join('models', 'resaved_scaler.joblib')
+OUT_MODEL = os.path.join('models', 'isolation_forest.joblib')
+OUT_SCALER = os.path.join('models', 'scaler_if.joblib')
 
 def load_obj(path):
     obj = None

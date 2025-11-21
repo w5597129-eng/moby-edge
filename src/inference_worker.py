@@ -12,7 +12,23 @@ import joblib
 import numpy as np
 from scipy.fft import rfft, rfftfreq
 from scipy.stats import kurtosis, skew
+try:
+    # Prefer the canonical feature implementation from feature_extractor
+    from feature_extractor import extract_features
+except Exception:
+    # fallback: local implementation will be used (defined below if necessary)
+    extract_features = None
 import paho.mqtt.client as mqtt
+try:
+    import torch
+    import torch.nn as nn
+except Exception:
+    torch = None
+    nn = None
+try:
+    import onnxruntime as ort
+except Exception:
+    ort = None
 
 from inference_interface import (
     InferenceResultMessage,
@@ -56,11 +72,11 @@ DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
         name="isolation_forest",
         sensor_type="accel_gyro",
         model_path=_resolve_path(
-            "models/resaved_isolation_forest.joblib",
+            "models/isolation_forest.joblib",
             "models/isolation_forest.pkl",
         ),
         scaler_path=_resolve_path(
-            "models/resaved_scaler.joblib",
+            "models/scaler_if.joblib",
             "models/scaler_if.pkl",
         ),
         score_field="iforest_score",
@@ -68,7 +84,139 @@ DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
         feature_pipeline="unit_norm",
         max_retries=3,
     )
+    ,
+    ModelConfig(
+        name="mlp_classifier",
+        sensor_type="accel_gyro",
+        model_path=_resolve_path(
+            "models/mlp_classifier.onnx",
+            "models/mlp_classifier.pth",
+            "models/mlp_classifier.pt",
+        ),
+        scaler_path=_resolve_path(
+            "models/scaler_mlp.pkl",
+            "models/scaler_mlp.joblib",
+        ),
+        score_field="mlp_score",
+        label_field="mlp_label",
+        feature_pipeline="identity",
+        max_retries=2,
+    ),
 ]
+
+
+if nn is not None:
+    class MLPClassifier(nn.Module):
+        def __init__(self, input_size, hidden_sizes=(64, 32), output_size=2):
+            super(MLPClassifier, self).__init__()
+            self.fc1 = nn.Linear(input_size, hidden_sizes[0])
+            self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
+            self.fc3 = nn.Linear(hidden_sizes[1], output_size)
+            self.relu = nn.ReLU()
+            self.sigmoid = nn.Sigmoid()
+
+        def forward(self, x):
+            x = self.relu(self.fc1(x))
+            x = self.relu(self.fc2(x))
+            x = self.sigmoid(self.fc3(x))
+            return x
+
+
+    class TorchMLPWrapper:
+        """Wraps a PyTorch MLP model checkpoint (or nn.Module) to provide
+        `predict` and `score_samples` like scikit-learn estimators expected by ModelRunner.
+
+        - `score_samples(X)` returns an anomaly score (float) per sample.
+        - `predict(X)` returns integer label per sample (0=normal, 1=anomaly).
+        """
+
+        def __init__(self, model: Any, device: Optional[Any] = None):
+            self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+            # model may be any object providing .to() and .eval(); avoid strict nn.Module annotation
+            self.model = model.to(self.device)
+            self.model.eval()
+
+        def _predict_proba(self, X: np.ndarray) -> np.ndarray:
+            if X is None:
+                return np.zeros((0, 2))
+            with torch.no_grad():
+                tx = torch.from_numpy(np.asarray(X, dtype=np.float32)).to(self.device)
+                if tx.dim() == 1:
+                    tx = tx.unsqueeze(0)
+                out = self.model(tx)
+                proba = out.cpu().numpy()
+            return proba
+
+        def score_samples(self, X: np.ndarray) -> np.ndarray:
+            # Use L2 norm of probability vector as a simple anomaly score
+            proba = self._predict_proba(X)
+            if proba.size == 0:
+                return np.array([])
+            mag = np.linalg.norm(proba, axis=1)
+            return mag
+
+        def predict(self, X: np.ndarray) -> np.ndarray:
+            proba = self._predict_proba(X)
+            if proba.size == 0:
+                return np.array([])
+            # label 1 if any anomaly-dimension probability > 0.5, else 0
+            binvec = (proba > 0.5).astype(int)
+            labels = np.any(binvec, axis=1).astype(int)
+            return labels
+else:
+    # Torch not available — provide lightweight stubs that explain the situation
+    class MLPClassifier:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("PyTorch is not installed in this environment; export the model to ONNX and use ONNX Runtime on this platform.")
+
+
+    class TorchMLPWrapper:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("PyTorch is not installed in this environment; cannot wrap a torch model. Use ONNX instead.")
+
+
+class ONNXMLPWrapper:
+    """Wraps an exported ONNX MLP model via onnxruntime.InferenceSession.
+
+    Provides `score_samples` and `predict` methods compatible with ModelRunner.
+    """
+
+    def __init__(self, onnx_path: str, providers: Optional[list] = None):
+        if ort is None:
+            raise RuntimeError("onnxruntime not available; install onnxruntime to use ONNX models")
+        self.onnx_path = onnx_path
+        opts = {}
+        # If no explicit providers are given, prefer CPUExecutionProvider to
+        # avoid attempting GPU device discovery on systems without GPU support
+        # (which causes noisy warnings like: "GPU device discovery failed").
+        chosen_providers = providers if providers is not None else ["CPUExecutionProvider"]
+        self.session = ort.InferenceSession(onnx_path, providers=chosen_providers)
+        # Determine input name
+        self.input_name = self.session.get_inputs()[0].name
+        self.output_name = self.session.get_outputs()[0].name
+
+    def _predict_proba(self, X: np.ndarray) -> np.ndarray:
+        if X is None:
+            return np.zeros((0, 2))
+        arr = np.asarray(X, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        res = self.session.run([self.output_name], {self.input_name: arr})[0]
+        return np.asarray(res)
+
+    def score_samples(self, X: np.ndarray) -> np.ndarray:
+        proba = self._predict_proba(X)
+        if proba.size == 0:
+            return np.array([])
+        return np.linalg.norm(proba, axis=1)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        proba = self._predict_proba(X)
+        if proba.size == 0:
+            return np.array([])
+        binvec = (proba > 0.5).astype(int)
+        labels = np.any(binvec, axis=1).astype(int)
+        return labels
 
 
 def _make_mqtt_client(client_id: str) -> mqtt.Client:
@@ -84,45 +232,50 @@ def _make_mqtt_client(client_id: str) -> mqtt.Client:
                 raise e
 
 
-def extract_features(signal: Iterable[float], sampling_rate: float, use_freq_domain: bool = USE_FREQUENCY_DOMAIN) -> list:
-    signal = np.asarray(list(signal), dtype=float)
-    if signal.size < 2:
-        feature_count = 11 if use_freq_domain else 5
-        return [0.0] * feature_count
+if extract_features is None:
+    # As a safety net, define a local copy compatible with feature_extractor's API.
+    def extract_features(signal: Iterable[float], sampling_rate: float, use_freq_domain: bool = USE_FREQUENCY_DOMAIN) -> list:
+        signal = np.asarray(list(signal), dtype=float)
+        if signal.size < 2:
+            feature_count = 11 if use_freq_domain else 5
+            return [0.0] * feature_count
 
-    abs_signal = np.abs(signal)
-    max_val = float(np.max(abs_signal))
-    abs_mean = float(np.mean(abs_signal))
-    std = float(np.std(signal))
-    peak_to_peak = float(np.ptp(signal))
-    rms = float(np.sqrt(np.mean(signal ** 2)))
-    crest_factor = max_val / rms if rms > 0 else 0.0
-    impulse_factor = max_val / abs_mean if abs_mean > 0 else 0.0
-    mean_val = float(np.mean(signal))
-    time_features = [std, peak_to_peak, crest_factor, impulse_factor, mean_val]
+        abs_signal = np.abs(signal)
+        max_val = float(np.max(abs_signal))
+        abs_mean = float(np.mean(abs_signal))
+        std = float(np.std(signal))
+        peak_to_peak = float(np.ptp(signal))
+        rms = float(np.sqrt(np.mean(signal ** 2)))
+        crest_factor = max_val / rms if rms > 0 else 0.0
+        impulse_factor = max_val / abs_mean if abs_mean > 0 else 0.0
+        mean_val = float(np.mean(signal))
+        time_features = [std, peak_to_peak, crest_factor, impulse_factor, mean_val]
 
-    if not use_freq_domain:
-        return time_features
+        if not use_freq_domain:
+            return time_features
 
-    signal_centered = signal - np.mean(signal)
-    spectrum = np.abs(rfft(signal_centered))
-    freqs = rfftfreq(signal.size, 1.0 / sampling_rate) if signal.size > 0 else np.array([0.0])
-    dominant_freq = float(freqs[np.argmax(spectrum)]) if spectrum.size > 0 else 0.0
-    spectral_sum = float(np.sum(spectrum))
-    spectral_centroid = float(np.sum(freqs * spectrum) / spectral_sum) if spectral_sum > 0 else 0.0
-    spectral_energy = float(np.sum(spectrum ** 2))
-    spectral_kurt = float(kurtosis(spectrum, fisher=False)) if spectrum.size > 1 else 0.0
-    spectral_skewness = float(skew(spectrum)) if spectrum.size > 1 else 0.0
-    spectral_std = float(np.std(spectrum))
-    freq_features = [
-        dominant_freq,
-        spectral_centroid,
-        spectral_energy,
-        spectral_kurt,
-        spectral_skewness,
-        spectral_std,
-    ]
-    return time_features + freq_features
+        signal_centered = signal - np.mean(signal)
+        spectrum = np.abs(rfft(signal_centered))
+        freqs = rfftfreq(signal.size, 1.0 / sampling_rate) if signal.size > 0 else np.array([0.0])
+        dominant_freq = float(freqs[np.argmax(spectrum)]) if spectrum.size > 0 else 0.0
+        spectral_sum = float(np.sum(spectrum))
+        spectral_centroid = float(np.sum(freqs * spectrum) / spectral_sum) if spectral_sum > 0 else 0.0
+        spectral_energy = float(np.sum(spectrum ** 2))
+        # Use safe defaults to avoid NaN as in feature_extractor
+        spectral_kurt = float(kurtosis(spectrum, fisher=False)) if spectrum.size > 1 else 3.0
+        spectral_skewness = float(skew(spectrum)) if spectrum.size > 1 else 0.0
+        spectral_kurt = 3.0 if np.isnan(spectral_kurt) else spectral_kurt
+        spectral_skewness = 0.0 if np.isnan(spectral_skewness) else spectral_skewness
+        spectral_std = float(np.std(spectrum))
+        freq_features = [
+            dominant_freq,
+            spectral_centroid,
+            spectral_energy,
+            spectral_kurt,
+            spectral_skewness,
+            spectral_std,
+        ]
+        return time_features + freq_features
 FEATURE_PIPELINES: Dict[str, Callable[[np.ndarray], np.ndarray]] = {}
 
 
@@ -183,9 +336,49 @@ class ModelRunner:
             self.scaler = _load_artifact(self.config.scaler_path)
 
     def reload_artifacts(self):
-        loaded_model = _load_artifact(self.config.model_path)
+        # If an ONNX file is specified, prefer creating an ONNX wrapper directly
+        model_path = self.config.model_path
+        if model_path and os.path.exists(model_path) and os.path.splitext(model_path)[1].lower() == ".onnx":
+            try:
+                self.model = ONNXMLPWrapper(model_path)
+            except Exception as exc:
+                print(f"Failed to load ONNX model ({model_path}): {exc}")
+                self.model = None
+            loaded_model = None
+        else:
+            loaded_model = _load_artifact(self.config.model_path)
         if loaded_model is not None:
-            self.model = loaded_model
+            # Torch checkpoint saved as a dict with model_state_dict
+            if isinstance(loaded_model, dict) and "model_state_dict" in loaded_model:
+                try:
+                    input_size = loaded_model.get("input_size")
+                    hidden_sizes = loaded_model.get("hidden_sizes", (64, 32))
+                    output_size = loaded_model.get("output_size", 2)
+                    if input_size is None:
+                        # If input_size not present, try to infer from state_dict weights
+                        # fallback: use first Linear weight in state_dict
+                        for k, v in loaded_model["model_state_dict"].items():
+                            if k.endswith(".weight") and v is not None:
+                                input_size = v.shape[1]
+                                break
+                    model = MLPClassifier(input_size, hidden_sizes, output_size)
+                    try:
+                        model.load_state_dict(loaded_model["model_state_dict"])
+                    except Exception:
+                        # Ignore load errors here; model may already be a full module saved differently
+                        pass
+                    self.model = TorchMLPWrapper(model)
+                except Exception as exc:
+                    print(f"Failed to construct Torch MLP from checkpoint: {exc}")
+                    self.model = loaded_model
+            # Only attempt to treat loaded_model as a torch.nn.Module if torch
+            # (and therefore `nn`) was successfully imported. When `nn` is
+            # None, `isinstance(..., nn.Module)` would raise AttributeError,
+            # so guard the check accordingly.
+            elif nn is not None and isinstance(loaded_model, nn.Module):
+                self.model = TorchMLPWrapper(loaded_model)
+            else:
+                self.model = loaded_model
         loaded_scaler = _load_artifact(self.config.scaler_path)
         if loaded_scaler is not None:
             self.scaler = loaded_scaler
