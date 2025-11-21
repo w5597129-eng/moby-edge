@@ -12,12 +12,10 @@ import joblib
 import numpy as np
 from scipy.fft import rfft, rfftfreq
 from scipy.stats import kurtosis, skew
-try:
-    # Prefer the canonical feature implementation from feature_extractor
-    from feature_extractor import extract_features
-except Exception:
-    # fallback: local implementation will be used (defined below if necessary)
-    extract_features = None
+
+# [수정 1] 외부 feature_extractor 임포트 시도 구문을 삭제했습니다.
+# 이제 무조건 아래에 정의된 extract_features 함수를 사용합니다.
+
 import paho.mqtt.client as mqtt
 try:
     import torch
@@ -83,8 +81,7 @@ DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
         label_field="iforest_label",
         feature_pipeline="unit_norm",
         max_retries=3,
-    )
-    ,
+    ),
     ModelConfig(
         name="mlp_classifier",
         sensor_type="accel_gyro",
@@ -121,18 +118,9 @@ if nn is not None:
             x = self.sigmoid(self.fc3(x))
             return x
 
-
     class TorchMLPWrapper:
-        """Wraps a PyTorch MLP model checkpoint (or nn.Module) to provide
-        `predict` and `score_samples` like scikit-learn estimators expected by ModelRunner.
-
-        - `score_samples(X)` returns an anomaly score (float) per sample.
-        - `predict(X)` returns integer label per sample (0=normal, 1=anomaly).
-        """
-
         def __init__(self, model: Any, device: Optional[Any] = None):
             self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
-            # model may be any object providing .to() and .eval(); avoid strict nn.Module annotation
             self.model = model.to(self.device)
             self.model.eval()
 
@@ -148,7 +136,6 @@ if nn is not None:
             return proba
 
         def score_samples(self, X: np.ndarray) -> np.ndarray:
-            # Use L2 norm of probability vector as a simple anomaly score
             proba = self._predict_proba(X)
             if proba.size == 0:
                 return np.array([])
@@ -159,39 +146,26 @@ if nn is not None:
             proba = self._predict_proba(X)
             if proba.size == 0:
                 return np.array([])
-            # label 1 if any anomaly-dimension probability > 0.5, else 0
             binvec = (proba > 0.5).astype(int)
             labels = np.any(binvec, axis=1).astype(int)
             return labels
 else:
-    # Torch not available — provide lightweight stubs that explain the situation
     class MLPClassifier:
         def __init__(self, *args, **kwargs):
-            raise RuntimeError("PyTorch is not installed in this environment; export the model to ONNX and use ONNX Runtime on this platform.")
-
+            raise RuntimeError("PyTorch is not installed.")
 
     class TorchMLPWrapper:
         def __init__(self, *args, **kwargs):
-            raise RuntimeError("PyTorch is not installed in this environment; cannot wrap a torch model. Use ONNX instead.")
+            raise RuntimeError("PyTorch is not installed.")
 
 
 class ONNXMLPWrapper:
-    """Wraps an exported ONNX MLP model via onnxruntime.InferenceSession.
-
-    Provides `score_samples` and `predict` methods compatible with ModelRunner.
-    """
-
     def __init__(self, onnx_path: str, providers: Optional[list] = None):
         if ort is None:
-            raise RuntimeError("onnxruntime not available; install onnxruntime to use ONNX models")
+            raise RuntimeError("onnxruntime not available")
         self.onnx_path = onnx_path
-        opts = {}
-        # If no explicit providers are given, prefer CPUExecutionProvider to
-        # avoid attempting GPU device discovery on systems without GPU support
-        # (which causes noisy warnings like: "GPU device discovery failed").
         chosen_providers = providers if providers is not None else ["CPUExecutionProvider"]
         self.session = ort.InferenceSession(onnx_path, providers=chosen_providers)
-        # Determine input name
         self.input_name = self.session.get_inputs()[0].name
         self.output_name = self.session.get_outputs()[0].name
 
@@ -222,7 +196,7 @@ class ONNXMLPWrapper:
 def _make_mqtt_client(client_id: str) -> mqtt.Client:
     try:
         return mqtt.Client(client_id=client_id)
-    except Exception as e:  # pragma: no cover - compatibility fallback
+    except Exception as e:
         try:
             return mqtt.Client(client_id=client_id, callback_api_version=1)
         except Exception:
@@ -232,71 +206,73 @@ def _make_mqtt_client(client_id: str) -> mqtt.Client:
                 raise e
 
 
-if extract_features is None:
-    # As a safety net, define a local copy compatible with feature_extractor's API.
-    def extract_features(signal: Iterable[float], sampling_rate: float, use_freq_domain: bool = USE_FREQUENCY_DOMAIN) -> list:
-        signal = np.asarray(list(signal), dtype=float)
-        if signal.size < 2:
-            feature_count = 11 if use_freq_domain else 5
-            return [0.0] * feature_count
+# [수정 2] if extract_features is None: 조건문을 제거하고 함수를 직접 정의합니다.
+# 이렇게 하면 외부 파일 유무와 상관없이 항상 이 '안전한' 버전이 사용됩니다.
+def extract_features(signal: Iterable[float], sampling_rate: float, use_freq_domain: bool = USE_FREQUENCY_DOMAIN) -> list:
+    # 리스트를 numpy 배열로 확실하게 변환 (가장 중요한 부분)
+    signal = np.asarray(list(signal), dtype=float)
+    
+    if signal.size < 2:
+        feature_count = 11 if use_freq_domain else 5
+        return [0.0] * feature_count
 
-        abs_signal = np.abs(signal)
-        max_val = float(np.max(abs_signal))
-        abs_mean = float(np.mean(abs_signal))
-        std = float(np.std(signal))
-        peak_to_peak = float(np.ptp(signal))
-        rms = float(np.sqrt(np.mean(signal ** 2)))
-        crest_factor = max_val / rms if rms > 0 else 0.0
-        impulse_factor = max_val / abs_mean if abs_mean > 0 else 0.0
-        mean_val = float(np.mean(signal))
-        time_features = [std, peak_to_peak, crest_factor, impulse_factor, mean_val]
+    abs_signal = np.abs(signal)
+    max_val = float(np.max(abs_signal))
+    abs_mean = float(np.mean(abs_signal))
+    std = float(np.std(signal))
+    peak_to_peak = float(np.ptp(signal))
+    
+    # 여기서 signal이 numpy 배열이므로 ** 2 연산이 정상 작동합니다.
+    rms = float(np.sqrt(np.mean(signal ** 2)))
+    
+    crest_factor = max_val / rms if rms > 0 else 0.0
+    impulse_factor = max_val / abs_mean if abs_mean > 0 else 0.0
+    mean_val = float(np.mean(signal))
+    time_features = [std, peak_to_peak, crest_factor, impulse_factor, mean_val]
 
-        if not use_freq_domain:
-            return time_features
+    if not use_freq_domain:
+        return time_features
 
-        signal_centered = signal - np.mean(signal)
-        spectrum = np.abs(rfft(signal_centered))
-        freqs = rfftfreq(signal.size, 1.0 / sampling_rate) if signal.size > 0 else np.array([0.0])
-        dominant_freq = float(freqs[np.argmax(spectrum)]) if spectrum.size > 0 else 0.0
-        spectral_sum = float(np.sum(spectrum))
-        spectral_centroid = float(np.sum(freqs * spectrum) / spectral_sum) if spectral_sum > 0 else 0.0
-        spectral_energy = float(np.sum(spectrum ** 2))
-        # Use safe defaults to avoid NaN as in feature_extractor
-        spectral_kurt = float(kurtosis(spectrum, fisher=False)) if spectrum.size > 1 else 3.0
-        spectral_skewness = float(skew(spectrum)) if spectrum.size > 1 else 0.0
-        spectral_kurt = 3.0 if np.isnan(spectral_kurt) else spectral_kurt
-        spectral_skewness = 0.0 if np.isnan(spectral_skewness) else spectral_skewness
-        spectral_std = float(np.std(spectrum))
-        freq_features = [
-            dominant_freq,
-            spectral_centroid,
-            spectral_energy,
-            spectral_kurt,
-            spectral_skewness,
-            spectral_std,
-        ]
-        return time_features + freq_features
+    signal_centered = signal - np.mean(signal)
+    spectrum = np.abs(rfft(signal_centered))
+    freqs = rfftfreq(signal.size, 1.0 / sampling_rate) if signal.size > 0 else np.array([0.0])
+    dominant_freq = float(freqs[np.argmax(spectrum)]) if spectrum.size > 0 else 0.0
+    spectral_sum = float(np.sum(spectrum))
+    spectral_centroid = float(np.sum(freqs * spectrum) / spectral_sum) if spectral_sum > 0 else 0.0
+    spectral_energy = float(np.sum(spectrum ** 2))
+    
+    spectral_kurt = float(kurtosis(spectrum, fisher=False)) if spectrum.size > 1 else 3.0
+    spectral_skewness = float(skew(spectrum)) if spectrum.size > 1 else 0.0
+    spectral_kurt = 3.0 if np.isnan(spectral_kurt) else spectral_kurt
+    spectral_skewness = 0.0 if np.isnan(spectral_skewness) else spectral_skewness
+    spectral_std = float(np.std(spectrum))
+    freq_features = [
+        dominant_freq,
+        spectral_centroid,
+        spectral_energy,
+        spectral_kurt,
+        spectral_skewness,
+        spectral_std,
+    ]
+    return time_features + freq_features
+
+
 FEATURE_PIPELINES: Dict[str, Callable[[np.ndarray], np.ndarray]] = {}
-
 
 def feature_pipeline(name: str) -> Callable[[np.ndarray], np.ndarray]:
     if name not in FEATURE_PIPELINES:
         raise KeyError(f"Unknown feature pipeline: {name}")
     return FEATURE_PIPELINES[name]
 
-
 def register_feature_pipeline(name: str):
     def decorator(func: Callable[[np.ndarray], np.ndarray]) -> Callable[[np.ndarray], np.ndarray]:
         FEATURE_PIPELINES[name] = func
         return func
-
     return decorator
-
 
 @register_feature_pipeline("identity")
 def _identity_pipeline(features: np.ndarray) -> np.ndarray:
     return features
-
 
 @register_feature_pipeline("unit_norm")
 def _unit_norm_pipeline(features: np.ndarray) -> np.ndarray:
@@ -304,7 +280,6 @@ def _unit_norm_pipeline(features: np.ndarray) -> np.ndarray:
     if norm == 0:
         return features
     return features / norm
-
 
 def _load_artifact(path: Optional[str]):
     if not path:
@@ -319,14 +294,8 @@ def _load_artifact(path: Optional[str]):
             print(f"Artifact load error ({path}):", exc)
             return None
 
-
 class ModelRunner:
-    def __init__(
-        self,
-        config: ModelConfig,
-        model: Optional[Any] = None,
-        scaler: Optional[Any] = None,
-    ):
+    def __init__(self, config: ModelConfig, model: Optional[Any] = None, scaler: Optional[Any] = None):
         self.config = config
         self.model = model
         self.scaler = scaler
@@ -336,7 +305,6 @@ class ModelRunner:
             self.scaler = _load_artifact(self.config.scaler_path)
 
     def reload_artifacts(self):
-        # If an ONNX file is specified, prefer creating an ONNX wrapper directly
         model_path = self.config.model_path
         if model_path and os.path.exists(model_path) and os.path.splitext(model_path)[1].lower() == ".onnx":
             try:
@@ -348,15 +316,12 @@ class ModelRunner:
         else:
             loaded_model = _load_artifact(self.config.model_path)
         if loaded_model is not None:
-            # Torch checkpoint saved as a dict with model_state_dict
             if isinstance(loaded_model, dict) and "model_state_dict" in loaded_model:
                 try:
                     input_size = loaded_model.get("input_size")
                     hidden_sizes = loaded_model.get("hidden_sizes", (64, 32))
                     output_size = loaded_model.get("output_size", 2)
                     if input_size is None:
-                        # If input_size not present, try to infer from state_dict weights
-                        # fallback: use first Linear weight in state_dict
                         for k, v in loaded_model["model_state_dict"].items():
                             if k.endswith(".weight") and v is not None:
                                 input_size = v.shape[1]
@@ -365,16 +330,11 @@ class ModelRunner:
                     try:
                         model.load_state_dict(loaded_model["model_state_dict"])
                     except Exception:
-                        # Ignore load errors here; model may already be a full module saved differently
                         pass
                     self.model = TorchMLPWrapper(model)
                 except Exception as exc:
                     print(f"Failed to construct Torch MLP from checkpoint: {exc}")
                     self.model = loaded_model
-            # Only attempt to treat loaded_model as a torch.nn.Module if torch
-            # (and therefore `nn`) was successfully imported. When `nn` is
-            # None, `isinstance(..., nn.Module)` would raise AttributeError,
-            # so guard the check accordingly.
             elif nn is not None and isinstance(loaded_model, nn.Module):
                 self.model = TorchMLPWrapper(loaded_model)
             else:
@@ -460,9 +420,7 @@ class InferenceEngine:
         feats = []
         for field in SENSOR_FIELDS:
             sig = window_msg.window_fields.get(field)
-            # Normalize incoming signal to numpy array to avoid type errors
-            # (some publishers may send Python lists which don't support
-            # elementwise operations like `signal ** 2` in feature_extractor).
+            # [확인] 리스트가 들어와도 numpy 배열로 변환합니다.
             arr = np.asarray(sig, dtype=float) if sig is not None else np.asarray([])
             if arr.size < 2:
                 feat_len = 11 if USE_FREQUENCY_DOMAIN else 5
@@ -493,11 +451,14 @@ class MQTTInferenceWorker:
         self.client.on_message = self._on_message
         self.client.on_connect = self._on_connect
 
-    def _on_connect(self, client, userdata, flags, rc):  # pragma: no cover - network callback
+    def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
+            print(f"Connected to MQTT broker at {self.broker}:{self.port}")
             client.subscribe(f"{WINDOW_TOPIC_ROOT}/#")
+        else:
+            print(f"Failed to connect to MQTT broker, return code {rc}")
 
-    def _on_message(self, client, userdata, msg):  # pragma: no cover - network callback
+    def _on_message(self, client, userdata, msg):
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
             window_msg = WindowMessage.from_payload(payload)
@@ -512,17 +473,18 @@ class MQTTInferenceWorker:
                     f"score={result.score} label={result.label}"
                 )
         except Exception as exc:
-            print("Inference MQTT handler error:", exc)
+            print(f"Inference MQTT handler error: {exc}")
 
-    def start(self):  # pragma: no cover - network loop
+    def start(self):
+        print(f"Starting Inference Worker on {self.broker}:{self.port}...")
         self.client.connect(self.broker, self.port, 60)
         self.client.loop_forever()
 
 
-def main():  # pragma: no cover - CLI entry point
+def main():
     worker = MQTTInferenceWorker()
     worker.start()
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     main()

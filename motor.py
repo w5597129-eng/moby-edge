@@ -17,11 +17,11 @@ PWMA = 18
 STBY = 23
 
 PWM_FREQ = 100     # Hz
-DUTY = 67          # 0..100 (%), set your steady speed here
+DUTY = 73          # 0..100 (%), set your steady speed here
 
 stop_flag = False
 # -----------------------------
-# IR sensor + MQTT (merged from IR_mqtt_pub.py)
+# IR sensor + MQTT
 # -----------------------------
 IR_PIN = 17
 DEAD_TIME_MS = 200
@@ -40,7 +40,7 @@ cycle_count = 0
 ir_thread = None
 
 def now_ns():
-    return time.monotonic_ns()
+    return time.time_ns()
 
 def init_mqtt():
     global mqtt_client
@@ -52,7 +52,7 @@ def init_mqtt():
         mqtt_client = None
 
 def _publish_ir(msg: dict):
-    # Log the outgoing MQTT payload to the terminal so users can see publishes
+    # Log the outgoing MQTT payload to the terminal
     try:
         print(f"[MQTT PUBLISH] topic={MQTT_TOPIC} payload={json.dumps(msg)}")
     except Exception:
@@ -65,33 +65,49 @@ def _publish_ir(msg: dict):
             pass
 
 def record_hit(t_ns):
+    """
+    Records a valid sensor hit and publishes MQTT message with timestamp.
+    """
     global last_hit_ns, dead_until_ns, cycle_count, cycle_times_ms
+    
+    # Debounce check
     if t_ns < dead_until_ns:
         return
+
+    # First hit initialization
     if last_hit_ns is None:
         last_hit_ns = t_ns
         dead_until_ns = t_ns + DEAD_TIME_MS * 1_000_000
         return
+
+    # Calculate time delta
     dt_ms = (t_ns - last_hit_ns) / 1_000_000.0
     last_hit_ns = t_ns
     dead_until_ns = t_ns + DEAD_TIME_MS * 1_000_000
+
+    # Filter out noise (too fast hits)
     if dt_ms < DEAD_TIME_MS * 1.2:
         return
+
     cycle_count += 1
     cycle_times_ms.append(dt_ms)
     if len(cycle_times_ms) > AVG_WINDOW:
         cycle_times_ms = cycle_times_ms[-AVG_WINDOW:]
+
     if cycle_count % PRINT_EVERY == 0:
         avg_ms = sum(cycle_times_ms) / len(cycle_times_ms) if cycle_times_ms else float('nan')
+        
+        # Added timestamp_ns for Telegraf compatibility
         msg = {
             "cycles": cycle_count,
             "last_cycle_ms": round(dt_ms, 2),
-            "avg_cycle_ms": round(avg_ms, 2) if avg_ms == avg_ms else None
+            "avg_cycle_ms": round(avg_ms, 2) if avg_ms == avg_ms else None,
+            "timestamp_ns": t_ns
         }
         _publish_ir(msg)
 
 def ir_polling_loop():
-    # ensure pin mode independent from main init; sample idle then set pull
+    # ensure pin mode independent from main init
     try:
         GPIO.setup(IR_PIN, GPIO.IN)
         vals = []
