@@ -80,7 +80,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def read_influxdb_csv(file_path: str) -> Tuple[pd.DataFrame, float]:
     """
-    InfluxDB CSV 파일 읽기 (V16과 동일)
+    InfluxDB CSV 파일 읽기
     """
     with open(file_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
@@ -285,10 +285,10 @@ def compute_std_xyz(data_3axis: np.ndarray) -> Tuple[float, float, float]:
 # 통합 특징 추출 함수
 # =====================================
 
-def extract_features_v17(data_dict: Dict[str, np.ndarray], 
+def extract_features(data_dict: Dict[str, np.ndarray], 
                          sampling_rate: float) -> Dict[str, float]:
     """
-    V17 특징 추출: PCA + 벡터 스칼라화
+    특징 추출: PCA + 벡터 스칼라화
     
     Parameters:
     - data_dict: {
@@ -359,12 +359,12 @@ def extract_features_v17(data_dict: Dict[str, np.ndarray],
 # 다중 센서 파일 처리
 # =====================================
 
-def process_multi_sensor_files_v17(file_dict: Dict[str, str],
+def process_multi_sensor_files(file_dict: Dict[str, str],
                                     resample_rate: str = '100ms',
                                     window_size: float = WINDOW_SIZE,
                                     window_overlap: float = WINDOW_OVERLAP) -> pd.DataFrame:
     """
-    여러 센서 파일을 동기화하여 V17 특징 추출
+    여러 센서 파일을 동기화하여 특징 추출
     
     Parameters:
     - file_dict: {sensor_type: file_path} 딕셔너리
@@ -376,7 +376,7 @@ def process_multi_sensor_files_v17(file_dict: Dict[str, str],
     - 특징 DataFrame
     """
     
-    print("\n=== Multi-Sensor Processing V17 (PCA + Vector Scalarization) ===")
+    print("\n=== Multi-Sensor Processing (PCA + Vector Scalarization) ===")
     print(f"Expected features: 15 (Accel: 9, Gyro: 4, Env: 2)")
     
     # 1. 각 센서 파일 독립적으로 읽고 리샘플링
@@ -437,7 +437,7 @@ def process_multi_sensor_files_v17(file_dict: Dict[str, str],
     total_time = merged_df['Time(s)'].iloc[-1] - merged_df['Time(s)'].iloc[0]
     effective_sr = (n_samples - 1) / total_time if total_time > 0 else 1.0
     
-    print(f"\nExtracting V17 features with {window_size}s windows (overlap: {window_overlap}s)...")
+    print(f"\nExtracting features with {window_size}s windows (overlap: {window_overlap}s)...")
     print(f"Effective sampling rate: {effective_sr:.2f} Hz")
     
     features_list = []
@@ -493,7 +493,7 @@ def process_multi_sensor_files_v17(file_dict: Dict[str, str],
                 data_dict['temperature'] = temperature
         
         # 특징 추출
-        features = extract_features_v17(data_dict, effective_sr)
+        features = extract_features(data_dict, effective_sr)
         
         # 메타데이터 추가
         features['window_id'] = window_count
@@ -523,7 +523,7 @@ def process_multi_sensor_files_v17(file_dict: Dict[str, str],
 
 if __name__ == "__main__":
     print("\n" + "=" * 70)
-    print("Feature Extraction V17 - PCA + Vector Scalarization")
+    print("Feature Extraction - PCA + Vector Scalarization")
     print("=" * 70)
     
     sensor_files = {
@@ -534,7 +534,7 @@ if __name__ == "__main__":
     valid_files = {k: v for k, v in sensor_files.items() if os.path.exists(v)}
     
     if valid_files:
-        features = process_multi_sensor_files_v17(
+        features = process_multi_sensor_files(
             valid_files,
             resample_rate='78.125ms',  # ~12.8Hz
             window_size=WINDOW_SIZE,
