@@ -1,0 +1,135 @@
+{
+    "model_type": "MLP Classifier (3-Level Alert System) - ONNX",
+    "training_date": "2025-11-26 09:39:23",
+    "data_sources": {
+        "normal": "data/processed/1124_features.csv",
+        "s1_yellow": "data/processed/1120_features_S1_yellow.csv",
+        "s1_red": "data/processed/1120_features_S1.csv",
+        "s2_yellow": "data/processed/1120_features_S2_yellow.csv",
+        "s2_red": "data/processed/1120_features_S2.csv"
+    },
+    "label_mapping": {
+        "normal": [
+            1,
+            0,
+            0,
+            1,
+            0,
+            0
+        ],
+        "s1_yellow": [
+            0,
+            1,
+            0,
+            1,
+            0,
+            0
+        ],
+        "s1_red": [
+            0,
+            0,
+            1,
+            1,
+            0,
+            0
+        ],
+        "s2_yellow": [
+            1,
+            0,
+            0,
+            0,
+            1,
+            0
+        ],
+        "s2_red": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+        ]
+    },
+    "dataset": {
+        "total_samples": 3691,
+        "train_samples": 3137,
+        "test_samples": 554,
+        "feature_dim": 15,
+        "label_distribution": {
+            "normal": 723,
+            "s1_yellow": 734,
+            "s1_red": 741,
+            "s2_yellow": 736,
+            "s2_red": 757
+        }
+    },
+    "architecture": {
+        "input_size": 15,
+        "hidden_layers": [
+            64,
+            32
+        ],
+        "output_size": 6,
+        "output_structure": "[S1_normal, S1_yellow, S1_red, S2_normal, S2_yellow, S2_red]",
+        "total_parameters": 3302
+    },
+    "hyperparameters": {
+        "epochs": 30,
+        "batch_size": 32,
+        "learning_rate": 0.001,
+        "optimizer": "Adam",
+        "loss_function": "CrossEntropyLoss (S1 + S2)",
+        "random_seed": 42
+    },
+    "training_results": {
+        "training_time_seconds": 4.565925,
+        "final_loss": 1.120356564569955,
+        "min_loss": 1.1114332037742691,
+        "loss_history": [
+            1.8462072839640609,
+            1.4816349251101715,
+            1.355576135895469,
+            1.2899741114992085,
+            1.2520887165358572,
+            1.2100045584669017,
+            1.1830757675748882,
+            1.1648446176991318,
+            1.1525752351741598,
+            1.1446886652647847,
+            1.1402743886215518,
+            1.1342955273811264,
+            1.130998559672423,
+            1.1283992408501982,
+            1.125619144150705,
+            1.1233221701901368,
+            1.1214222474531694,
+            1.1197938220669525,
+            1.118039532141252,
+            1.1174261846927682,
+            1.1159189518051917,
+            1.1158077162925644,
+            1.1144683047978565,
+            1.1134458226386947,
+            1.1130089591247867,
+            1.113138319265963,
+            1.1144643323590058,
+            1.1114332037742691,
+            1.112820778230224,
+            1.120356564569955
+        ]
+    },
+    "onnx_export": {
+        "opset_version": 11,
+        "input_name": "input",
+        "output_name": "output",
+        "dynamic_axes": true,
+        "validation_passed": true
+    },
+    "saved_files": {
+        "onnx_model": "models\\mlp_classifier.onnx",
+        "pytorch_model": "models\\mlp_classifier.pth",
+        "scaler": "models\\scaler_mlp.pkl",
+        "data_split": "models\\data_split.npz",
+        "loss_curve": "results/mlp\\mlp_loss_curve.png"
+    }
+}
