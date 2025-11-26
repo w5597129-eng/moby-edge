@@ -48,7 +48,7 @@ except Exception:
 # ==============================
 # Config
 # ==============================
-BROKER = "192.168.80.33"
+BROKER = "192.168.80.94"
 PORT = 1883
 # 버퍼 경로
 # In-memory publish buffer to avoid SD writes on Raspberry Pi
