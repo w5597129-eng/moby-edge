@@ -311,8 +311,8 @@ class ModelRunner:
                 score = float(self.model.score_samples(prepared)[0])
             except Exception as exc:
                 print(f"Model score error ({self.config.name}):", exc)
-        context_payload: Dict[str, Any] = copy.deepcopy(window_msg.context_payload) if isinstance(window_msg.context_payload, dict) else {}
-        context_fields = context_payload.setdefault("fields", {})
+        context_payload: Dict[str, Any] = {"fields": {}}
+        context_fields = context_payload["fields"]
         self._attach_probability_fields(context_fields, probas)
         if self.config.name == "mlp_classifier" and probas is not None and probas.size > 0:
             row = probas[0]
@@ -495,7 +495,7 @@ class MQTTInferenceWorker:
                 client.publish(topic, json.dumps(result.to_payload()))
                 print(
                     f"INFERENCE | {result.sensor_type} | model={result.model_name} "
-                    f"score={result.score} label={result.label}"
+                    f"score={result.score}"
                 )
         except Exception as exc:
             print(f"Inference MQTT handler error: {exc}")
