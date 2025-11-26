@@ -146,7 +146,7 @@ def _make_mqtt_client(client_id: str) -> mqtt.Client:
 
 # [수정 2] if extract_features is None: 조건문을 제거하고 함수를 직접 정의합니다.
 # 이렇게 하면 외부 파일 유무와 상관없이 항상 이 '안전한' 버전이 사용됩니다.
-def extract_features(signal: Iterable[float], sampling_rate: float, use_freq_domain: bool = USE_FREQUENCY_DOMAIN) -> list:
+def _legacy_extract_features(signal: Iterable[float], sampling_rate: float, use_freq_domain: bool = USE_FREQUENCY_DOMAIN) -> list:
     # 리스트를 numpy 배열로 확실하게 변환 (가장 중요한 부분)
     signal = np.asarray(list(signal), dtype=float)
     
@@ -336,13 +336,13 @@ class InferenceEngine:
     def _build_feature_vector(self, window_msg: WindowMessage) -> np.ndarray:
         # Prefer the new multi-axis feature extractor (v17) when available.
         try:
-            from feature_extractor import extract_features_v17, FEATURE_CONFIG_V17
+            from feature_extractor import extract_features as multi_sensor_extract_features, FEATURE_CONFIG_V17
         except Exception:
-            extract_features_v17 = None
+            multi_sensor_extract_features = None
             FEATURE_CONFIG_V17 = None
 
-        # If v17 extractor is available, build sensor-level dict (accel/gyro/pressure)
-        if extract_features_v17 is not None:
+        # If the multivariate extractor is available, build sensor-level dict (accel/gyro/pressure)
+        if multi_sensor_extract_features is not None:
             wf = window_msg.window_fields or {}
             data_dict = {}
             sr = float(window_msg.sampling_rate_hz)
@@ -397,7 +397,7 @@ class InferenceEngine:
 
             if data_dict:
                 try:
-                    feats_dict = extract_features_v17(data_dict, sr)
+                    feats_dict = multi_sensor_extract_features(data_dict, sr)
                     # Build deterministic feature order using FEATURE_CONFIG_V17 if available
                     ordered_keys = []
                     if FEATURE_CONFIG_V17 is not None:
@@ -423,7 +423,7 @@ class InferenceEngine:
                 feat_len = 11 if USE_FREQUENCY_DOMAIN else 5
                 feats.extend([0.0] * feat_len)
             else:
-                feats.extend(extract_features(arr, window_msg.sampling_rate_hz, USE_FREQUENCY_DOMAIN))
+                feats.extend(_legacy_extract_features(arr, window_msg.sampling_rate_hz, USE_FREQUENCY_DOMAIN))
         return np.asarray(feats, dtype=float).reshape(1, -1)
 
     def process_window(self, window_msg: WindowMessage) -> List[InferenceResultMessage]:
