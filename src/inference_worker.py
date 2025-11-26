@@ -1,7 +1,6 @@
 """Standalone inference worker that consumes sensor windows via MQTT."""
 from __future__ import annotations
 
-import copy
 import json
 import os
 import pickle
@@ -342,8 +341,8 @@ class ModelRunner:
                 attempts += 1
                 print(f"Model {self.config.name} inference failed (attempt {attempts}): {exc}")
                 self.reload_artifacts()
-        context_payload = copy.deepcopy(window_msg.context_payload) if isinstance(window_msg.context_payload, dict) else {}
-        context_fields = context_payload.setdefault("fields", {})
+        context_payload = {"fields": {}}
+        context_fields = context_payload["fields"]
         context_fields[f"{self.config.name}_error"] = str(last_error) if last_error else "unknown"
         return InferenceResultMessage(
             sensor_type=window_msg.sensor_type,
@@ -468,7 +467,7 @@ def build_default_engine() -> InferenceEngine:
 
 
 class MQTTInferenceWorker:
-    def __init__(self, broker: str = "localhost", port: int = 1883):
+    def __init__(self, broker: str = "192.168.80.33", port: int = 1883):
         self.broker = broker
         self.port = port
         self.engine = build_default_engine()
