@@ -309,6 +309,14 @@ def main():
     gyro_x_buf  = deque(maxlen=buf_len)
     gyro_y_buf  = deque(maxlen=buf_len)
     gyro_z_buf  = deque(maxlen=buf_len)
+    axis_buffers = [
+        accel_x_buf,
+        accel_y_buf,
+        accel_z_buf,
+        gyro_x_buf,
+        gyro_y_buf,
+        gyro_z_buf,
+    ]
     dht = adafruit_dht.DHT11(board.D4, use_pulseio=False)
     vib_ch, sound_ch = init_ads()
     bus = smbus2.SMBus(1)
@@ -444,7 +452,7 @@ def main():
                     pass
                 # enqueue window for inference when buffer full
                 try:
-                    if len(accel_x_buf) >= buf_len:
+                    if all(len(buf) >= buf_len for buf in axis_buffers):
                         window_signals = {
                             'fields_accel_x': list(accel_x_buf),
                             'fields_accel_y': list(accel_y_buf),
@@ -461,6 +469,8 @@ def main():
                             context_payload=payload,
                         )
                         buffer_publish(client, TOPIC_IMU_WINDOWS, window_msg.to_payload())
+                        for buf in axis_buffers:
+                            buf.clear()
                 except Exception:
                     pass
                 last_line["accel_gyro"] = (

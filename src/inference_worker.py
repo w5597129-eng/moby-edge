@@ -512,3 +512,16 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+buf_len = 100
+accel_x_buf = []
+window_pending = False
+
+# [수정 3] 제안된 코드 변경 사항을 여기에 통합합니다.
+if len(accel_x_buf) >= buf_len and not window_pending:
+    ...
+    window_pending = True
+    accel_x_buf.clear()
+    ...
+elif window_pending and len(accel_x_buf) == 0:
+    window_pending = False
