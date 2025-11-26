@@ -49,7 +49,6 @@ class ModelConfig:
     scaler_path: Optional[str] = None
     result_topic_override: Optional[str] = None
     score_field: str = "anomaly_score"
-    label_field: str = "anomaly_label"
     feature_pipeline: str = "identity"
     max_retries: int = 2
     probability_field_names: Optional[List[str]] = None
@@ -73,7 +72,6 @@ DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
             "models/scaler_if.pkl",
         ),
         score_field="iforest_score",
-        label_field="iforest_label",
         feature_pipeline="unit_norm",
         max_retries=3,
     ),
@@ -85,10 +83,8 @@ DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
         ),
         scaler_path=_resolve_path(
             "models/scaler_mlp.pkl",
-            "models/scaler_mlp.joblib",
         ),
         score_field="mlp_score",
-        label_field="mlp_label",
         feature_pipeline="identity",
         max_retries=2,
         probability_field_names=[
@@ -131,15 +127,7 @@ class ONNXMLPWrapper:
             return np.array([])
         return np.linalg.norm(proba, axis=1)
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        proba = self._predict_proba(X)
-        if proba.size == 0:
-            return np.array([])
-        binvec = (proba > 0.5).astype(int)
-        labels = np.any(binvec, axis=1).astype(int)
-        return labels
-
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+    def predict_proba_raw(self, X: np.ndarray) -> np.ndarray:
         return self._predict_proba(X)
 
 
@@ -286,10 +274,17 @@ class ModelRunner:
         return prepared
 
     def _predict_proba_values(self, prepared: np.ndarray) -> Optional[np.ndarray]:
-        if self.model is None or not hasattr(self.model, "predict_proba"):
+        if self.model is None:
+            return None
+        predict_fn = None
+        for attr in ("predict_proba", "predict_proba_raw"):
+            if hasattr(self.model, attr):
+                predict_fn = getattr(self.model, attr)
+                break
+        if predict_fn is None:
             return None
         try:
-            res = self.model.predict_proba(prepared)
+            res = predict_fn(prepared)
             arr = np.asarray(res, dtype=float)
             if arr.ndim == 1:
                 arr = arr.reshape(1, -1)
@@ -311,28 +306,26 @@ class ModelRunner:
         prepared = self._prepare_features(features)
         probas = self._predict_proba_values(prepared)
         score = None
-        label = None
         if self.model is not None:
             try:
                 score = float(self.model.score_samples(prepared)[0])
             except Exception as exc:
                 print(f"Model score error ({self.config.name}):", exc)
-            try:
-                label = int(self.model.predict(prepared)[0])
-            except Exception as exc:
-                print(f"Model predict error ({self.config.name}):", exc)
         context_payload: Dict[str, Any] = copy.deepcopy(window_msg.context_payload) if isinstance(window_msg.context_payload, dict) else {}
         context_fields = context_payload.setdefault("fields", {})
         self._attach_probability_fields(context_fields, probas)
-        if score is not None:
+        if self.config.name == "mlp_classifier" and probas is not None and probas.size > 0:
+            row = probas[0]
+            red_probs = [row[i] for i in (2, 5) if i < len(row)]
+            if red_probs:
+                score = float(max(red_probs))
+                context_fields[self.config.score_field] = score
+        elif score is not None:
             context_fields[self.config.score_field] = score
-        if label is not None:
-            context_fields[self.config.label_field] = label
         context_payload.setdefault("timestamp_ns", window_msg.timestamp_ns or current_timestamp_ns())
         return InferenceResultMessage(
             sensor_type=window_msg.sensor_type,
             score=score,
-            label=label,
             model_name=self.config.name,
             timestamp_ns=current_timestamp_ns(),
             context_payload=context_payload,
@@ -355,7 +348,6 @@ class ModelRunner:
         return InferenceResultMessage(
             sensor_type=window_msg.sensor_type,
             score=None,
-            label=None,
             model_name=self.config.name,
             timestamp_ns=current_timestamp_ns(),
             context_payload=context_payload,

@@ -99,7 +99,6 @@ class WindowMessage:
 class InferenceResultMessage:
     sensor_type: str
     score: Optional[float]
-    label: Optional[int]
     model_name: Optional[str] = None
     timestamp_ns: Optional[int] = None
     context_payload: Optional[Dict[str, Any]] = None
@@ -111,7 +110,6 @@ class InferenceResultMessage:
             "kind": self.KIND,
             "sensor_type": self.sensor_type,
             "score": self.score,
-            "label": self.label,
             "model_name": self.model_name,
             "timestamp_ns": self.timestamp_ns or current_timestamp_ns(),
             "context_payload": self.context_payload,
@@ -125,14 +123,12 @@ class InferenceResultMessage:
         if not sensor_type:
             raise ValueError("Missing sensor_type")
         score = payload.get("score")
-        label = payload.get("label")
         model_name = payload.get("model_name")
         timestamp_ns = payload.get("timestamp_ns")
         context = payload.get("context_payload")
         return cls(
             sensor_type=str(sensor_type),
             score=float(score) if score is not None else None,
-            label=int(label) if label is not None else None,
             model_name=str(model_name) if model_name else None,
             timestamp_ns=int(timestamp_ns) if timestamp_ns else None,
             context_payload=context,

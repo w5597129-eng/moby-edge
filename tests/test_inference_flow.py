@@ -61,7 +61,6 @@ def _build_model_config(
         scaler_path=None,
         result_topic_override=f"factory/test/{name}",
         score_field=f"{name}_score",
-        label_field=f"{name}_label",
         feature_pipeline=feature_pipeline,
         max_retries=max_retries,
         probability_field_names=probability_field_names,
@@ -77,9 +76,6 @@ def test_inference_engine_process_window_generates_result():
         def score_samples(self, X):
             return np.array([np.sum(X)])
 
-        def predict(self, X):
-            return np.array([math.copysign(1, np.sum(X))])
-
     msg = _build_default_window_message()
     runner = ModelRunner(
         config=_build_model_config("fake", feature_pipeline="identity"),
@@ -94,10 +90,8 @@ def test_inference_engine_process_window_generates_result():
     assert result.sensor_type == "accel_gyro"
     assert result.model_name == "fake"
     assert result.score is not None
-    assert result.label in (-1, 1)
     fields = result.context_payload["fields"]
     assert "fake_score" in fields
-    assert "fake_label" in fields
 
 
 def test_model_runner_applies_feature_pipeline_unit_norm():
@@ -107,9 +101,6 @@ def test_model_runner_applies_feature_pipeline_unit_norm():
         def score_samples(self, X):
             captured["norm"] = np.linalg.norm(X)
             return np.array([1.0])
-
-        def predict(self, X):
-            return np.array([1])
 
     msg = _build_default_window_message()
     runner = ModelRunner(
@@ -136,9 +127,6 @@ def test_model_runner_retry_and_recovers_from_pipeline_failure():
         def score_samples(self, X):
             return np.array([0.5])
 
-        def predict(self, X):
-            return np.array([1])
-
     msg = _build_default_window_message()
     runner = ModelRunner(
         config=_build_model_config("retry", feature_pipeline="test_fail_once", max_retries=2),
@@ -164,7 +152,7 @@ def test_model_runner_reports_error_after_retries():
     runner._run_once = always_fail  # type: ignore
     engine = InferenceEngine([runner])
     result = engine.process_window(msg)[0]
-    assert result.score is None and result.label is None
+    assert result.score is None
     assert "error_model_error" in result.context_payload["fields"]
 
 
@@ -191,3 +179,30 @@ def test_model_runner_records_probability_fields():
     fields = result.context_payload["fields"]
     assert math.isclose(fields["proba_low"], 0.25, rel_tol=1e-6)
     assert math.isclose(fields["proba_high"], 0.75, rel_tol=1e-6)
+
+
+def test_mlp_score_uses_red_probability():
+    class MockMLP:
+        def score_samples(self, X):
+            return np.array([0.0])
+
+        def predict_proba_raw(self, X):
+            return np.array([[0.1, 0.2, 0.7, 0.4, 0.5, 0.6]])
+
+    msg = _build_default_window_message()
+    runner = ModelRunner(
+        config=_build_model_config(
+            "mlp_classifier",
+            probability_field_names=[
+                "mlp_s1_prob_normal",
+                "mlp_s1_prob_yellow",
+                "mlp_s1_prob_red",
+                "mlp_s2_prob_normal",
+                "mlp_s2_prob_yellow",
+                "mlp_s2_prob_red",
+            ],
+        ),
+        model=MockMLP(),
+    )
+    result = InferenceEngine([runner]).process_window(msg)[0]
+    assert math.isclose(result.score, 0.7, rel_tol=1e-6)
