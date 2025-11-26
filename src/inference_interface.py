@@ -24,7 +24,9 @@ SENSOR_FIELDS: List[str] = [
 
 # Feature extraction configuration shared between the publisher and worker.
 USE_FREQUENCY_DOMAIN: bool = True
-WINDOW_SIZE: float = 5.0
+WINDOW_SIZE: float = 10.0
+WINDOW_OVERLAP: float = 5.0
+WINDOW_STEP: float = WINDOW_SIZE - WINDOW_OVERLAP
 
 WINDOW_TOPIC_ROOT = "factory/inference/windows"
 RESULT_TOPIC_ROOT = "factory/inference/results"

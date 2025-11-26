@@ -496,6 +496,14 @@ class MQTTInferenceWorker:
                     f"INFERENCE | {result.sensor_type} | model={result.model_name} "
                     f"score={result.score}"
                 )
+            top_result = self._best_scoring_result(results)
+            if top_result and top_result.score is not None:
+                label = self._label_for_result(top_result)
+                print(
+                    "TOP RESULT |"
+                    f" {top_result.sensor_type} | model={top_result.model_name}"
+                    f" | score={top_result.score:.4f} | label={label}"
+                )
         except Exception as exc:
             print(f"Inference MQTT handler error: {exc}")
 
@@ -503,6 +511,39 @@ class MQTTInferenceWorker:
         print(f"Starting Inference Worker on {self.broker}:{self.port}...")
         self.client.connect(self.broker, self.port, 60)
         self.client.loop_forever()
+
+    @staticmethod
+    def _best_scoring_result(results: List[InferenceResultMessage]) -> Optional[InferenceResultMessage]:
+        scored_results = [res for res in results if res.score is not None]
+        if not scored_results:
+            return None
+        return max(scored_results, key=lambda res: res.score)
+
+    @staticmethod
+    def _label_for_result(result: InferenceResultMessage) -> str:
+        if result is None:
+            return "n/a"
+        fields = (result.context_payload or {}).get("fields") or {}
+        for candidate in ("label", "anomaly_label"):
+            value = fields.get(candidate)
+            if value is not None:
+                return str(value)
+        prob_entries = [
+            (key, float(value))
+            for key, value in fields.items()
+            if isinstance(value, (int, float)) and "_prob_" in key.lower()
+        ]
+        if prob_entries:
+            best_key, _ = max(prob_entries, key=lambda item: item[1])
+            if "_prob_" in best_key:
+                prefix, suffix = best_key.split("_prob_", 1)
+                return f"{prefix}:{suffix}"
+            return best_key
+        if result.model_name:
+            return result.model_name
+        if result.sensor_type:
+            return result.sensor_type
+        return "n/a"
 
 
 def main():

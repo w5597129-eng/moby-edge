@@ -35,6 +35,7 @@ from inference_interface import (
     InferenceResultMessage,
     WindowMessage,
     WINDOW_SIZE,
+    WINDOW_OVERLAP,
     RESULT_TOPIC_ROOT,
     window_topic,
 )
@@ -303,6 +304,7 @@ def main():
     # IMU sampling rate estimate
     sampling_rate_imu = 1.0 / INTERVAL_IMU if INTERVAL_IMU > 0 else 16.0
     buf_len = int(WINDOW_SIZE * sampling_rate_imu) + 2
+    overlap_samples = max(int(round(WINDOW_OVERLAP * sampling_rate_imu)), 0)
     accel_x_buf = deque(maxlen=buf_len)
     accel_y_buf = deque(maxlen=buf_len)
     accel_z_buf = deque(maxlen=buf_len)
@@ -469,8 +471,13 @@ def main():
                             context_payload=payload,
                         )
                         buffer_publish(client, TOPIC_IMU_WINDOWS, window_msg.to_payload())
-                        for buf in axis_buffers:
-                            buf.clear()
+                        if overlap_samples > 0:
+                            for buf in axis_buffers:
+                                while len(buf) > overlap_samples:
+                                    buf.popleft()
+                        else:
+                            for buf in axis_buffers:
+                                buf.clear()
                 except Exception:
                     pass
                 last_line["accel_gyro"] = (
