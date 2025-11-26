@@ -1,6 +1,7 @@
 import math
 import pathlib
 import sys
+from typing import List, Optional
 
 import numpy as np
 
@@ -47,7 +48,12 @@ def _build_default_window_message() -> WindowMessage:
     )
 
 
-def _build_model_config(name: str, feature_pipeline: str = "identity", max_retries: int = 1) -> ModelConfig:
+def _build_model_config(
+    name: str,
+    feature_pipeline: str = "identity",
+    max_retries: int = 1,
+    probability_field_names: Optional[List[str]] = None,
+) -> ModelConfig:
     return ModelConfig(
         name=name,
         sensor_type="accel_gyro",
@@ -58,6 +64,7 @@ def _build_model_config(name: str, feature_pipeline: str = "identity", max_retri
         label_field=f"{name}_label",
         feature_pipeline=feature_pipeline,
         max_retries=max_retries,
+        probability_field_names=probability_field_names,
     )
 
 
@@ -159,3 +166,28 @@ def test_model_runner_reports_error_after_retries():
     result = engine.process_window(msg)[0]
     assert result.score is None and result.label is None
     assert "error_model_error" in result.context_payload["fields"]
+
+
+def test_model_runner_records_probability_fields():
+    class ProbaModel:
+        def score_samples(self, X):
+            return np.array([0.2])
+
+        def predict(self, X):
+            return np.array([1])
+
+        def predict_proba(self, X):
+            return np.array([[0.25, 0.75]])
+
+    msg = _build_default_window_message()
+    runner = ModelRunner(
+        config=_build_model_config(
+            "proba",
+            probability_field_names=["proba_low", "proba_high"],
+        ),
+        model=ProbaModel(),
+    )
+    result = InferenceEngine([runner]).process_window(msg)[0]
+    fields = result.context_payload["fields"]
+    assert math.isclose(fields["proba_low"], 0.25, rel_tol=1e-6)
+    assert math.isclose(fields["proba_high"], 0.75, rel_tol=1e-6)

@@ -52,6 +52,7 @@ class ModelConfig:
     label_field: str = "anomaly_label"
     feature_pipeline: str = "identity"
     max_retries: int = 2
+    probability_field_names: Optional[List[str]] = None
 
     def result_topic(self) -> str:
         if self.result_topic_override:
@@ -90,6 +91,14 @@ DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
         label_field="mlp_label",
         feature_pipeline="identity",
         max_retries=2,
+        probability_field_names=[
+            "mlp_s1_prob_normal",
+            "mlp_s1_prob_yellow",
+            "mlp_s1_prob_red",
+            "mlp_s2_prob_normal",
+            "mlp_s2_prob_yellow",
+            "mlp_s2_prob_red",
+        ],
     ),
 ]
 
@@ -129,6 +138,9 @@ class ONNXMLPWrapper:
         binvec = (proba > 0.5).astype(int)
         labels = np.any(binvec, axis=1).astype(int)
         return labels
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        return self._predict_proba(X)
 
 
 def _make_mqtt_client(client_id: str) -> mqtt.Client:
@@ -273,8 +285,31 @@ class ModelRunner:
                 print(f"Scaler transform error ({self.config.name}):", exc)
         return prepared
 
+    def _predict_proba_values(self, prepared: np.ndarray) -> Optional[np.ndarray]:
+        if self.model is None or not hasattr(self.model, "predict_proba"):
+            return None
+        try:
+            res = self.model.predict_proba(prepared)
+            arr = np.asarray(res, dtype=float)
+            if arr.ndim == 1:
+                arr = arr.reshape(1, -1)
+            return arr
+        except Exception as exc:
+            print(f"Probability extraction error ({self.config.name}):", exc)
+            return None
+
+    def _attach_probability_fields(self, fields: Dict[str, Any], probas: Optional[np.ndarray]) -> None:
+        if probas is None or probas.size == 0:
+            return
+        names = self.config.probability_field_names or []
+        row = probas[0]
+        for idx, value in enumerate(row):
+            key = names[idx] if idx < len(names) else f"{self.config.name}_prob_{idx}"
+            fields[key] = float(value)
+
     def _run_once(self, window_msg: WindowMessage, features: np.ndarray) -> InferenceResultMessage:
         prepared = self._prepare_features(features)
+        probas = self._predict_proba_values(prepared)
         score = None
         label = None
         if self.model is not None:
@@ -288,6 +323,7 @@ class ModelRunner:
                 print(f"Model predict error ({self.config.name}):", exc)
         context_payload: Dict[str, Any] = copy.deepcopy(window_msg.context_payload) if isinstance(window_msg.context_payload, dict) else {}
         context_fields = context_payload.setdefault("fields", {})
+        self._attach_probability_fields(context_fields, probas)
         if score is not None:
             context_fields[self.config.score_field] = score
         if label is not None:
