@@ -20,7 +20,7 @@ PWMA = 18
 STBY = 23
 
 PWM_FREQ = 100     # Hz
-DUTY = 83          # 0..100 (%)
+DUTY = 85          # 0..100 (%)
 
 stop_flag = False
 
@@ -29,7 +29,7 @@ stop_flag = False
 # -----------------------------
 # 11/25일 초기 안정 구간(4583ms) 대비 +15% 지점을 '고장 위험'으로 정의
 # 이 값을 넘으면 즉시 CRITICAL 상태로 판단
-FAILURE_THRESHOLD_MS = 4400
+FAILURE_THRESHOLD_MS = 5000
 
 # 추세 분석을 위한 윈도우 크기
 TREND_WINDOW_SIZE = 50       

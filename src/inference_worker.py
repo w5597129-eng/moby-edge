@@ -467,7 +467,7 @@ def build_default_engine() -> InferenceEngine:
 
 
 class MQTTInferenceWorker:
-    def __init__(self, broker: str = "192.168.80.94", port: int = 1883):
+    def __init__(self, broker: str = "192.168.80.192", port: int = 1883):
         self.broker = broker
         self.port = port
         self.engine = build_default_engine()
