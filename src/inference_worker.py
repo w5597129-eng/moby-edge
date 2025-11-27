@@ -58,6 +58,23 @@ class ModelConfig:
         return model_result_topic(self.sensor_type, self.name)
 
 
+FEATURE_DEBUG = os.getenv("FEATURE_DEBUG", "0").lower() in ("1", "true", "yes")
+FEATURE_DEBUG_MAX_ITEMS = int(os.getenv("FEATURE_DEBUG_MAX_ITEMS", "8"))
+
+def _formatted_vector(arr: np.ndarray, limit: int = FEATURE_DEBUG_MAX_ITEMS) -> str:
+    flat = np.asarray(arr).flatten()
+    values = ", ".join(f"{v:.4f}" for v in flat[:limit])
+    suffix = "..." if flat.size > limit else ""
+    return f"{values}{suffix}"
+
+def _debug_feature_vector(stage: str, config_name: str, vector: np.ndarray) -> None:
+    if not FEATURE_DEBUG:
+        return
+    print(
+        f"[FEAT] {stage} | {config_name} | len={np.asarray(vector).size}"
+        f" | data={_formatted_vector(vector)}"
+    )
+
 DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
     ModelConfig(
         name="isolation_forest",
@@ -263,13 +280,17 @@ class ModelRunner:
         prepared = np.asarray(features, dtype=float)
         if prepared.ndim == 1:
             prepared = prepared.reshape(1, -1)
+        _debug_feature_vector("raw", self.config.name, prepared)
         pipeline_fn = feature_pipeline(self.config.feature_pipeline)
         prepared = pipeline_fn(prepared)
+        _debug_feature_vector("after_pipeline", self.config.name, prepared)
         if self.scaler is not None:
+            _debug_feature_vector("before_scaling", self.config.name, prepared)
             try:
                 prepared = self.scaler.transform(prepared)
             except Exception as exc:
                 print(f"Scaler transform error ({self.config.name}):", exc)
+            _debug_feature_vector("after_scaling", self.config.name, prepared)
         return prepared
 
     def _predict_proba_values(self, prepared: np.ndarray) -> Optional[np.ndarray]:
