@@ -79,16 +79,10 @@ DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
     ModelConfig(
         name="isolation_forest",
         sensor_type="accel_gyro",
-        model_path=_resolve_path(
-            "models/isolation_forest.joblib",
-            "models/isolation_forest.pkl",
-        ),
-        scaler_path=_resolve_path(
-            "models/scaler_if.joblib",
-            "models/scaler_if.pkl",
-        ),
+        model_path="models/isolation_forest.joblib",
+        scaler_path="models/scaler_if.joblib",
         score_field="iforest_score",
-        feature_pipeline="unit_norm",
+        feature_pipeline="identity",
         max_retries=3,
     ),
     ModelConfig(

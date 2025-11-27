@@ -17,9 +17,9 @@ class MLP3LevelPredictor:
         self.result_dir = result_dir
         
         # 경로 설정
-        self.onnx_path = os.path.join(model_dir, "mlp_classifier_3level.onnx")
-        self.scaler_path = os.path.join(model_dir, "scaler_mlp_3level.pkl")
-        self.split_path = os.path.join(model_dir, "data_split_3level.npz")
+        self.onnx_path = os.path.join(model_dir, "mlp_classifier.onnx")
+        self.scaler_path = os.path.join(model_dir, "scaler_mlp.pkl")
+        self.split_path = os.path.join(model_dir, "data_split.npz")
         
         self.alert_levels = ['Normal', 'Yellow', 'Red']
         self.ort_session = None
