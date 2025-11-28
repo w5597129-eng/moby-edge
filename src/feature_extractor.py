@@ -536,7 +536,7 @@ if __name__ == "__main__":
     if valid_files:
         features = process_multi_sensor_files(
             valid_files,
-            resample_rate='78.125ms',  # ~12.8Hz
+            resample_rate='62.5ms',  # ~16Hz
             window_size=WINDOW_SIZE,
             window_overlap=WINDOW_OVERLAP
         )
