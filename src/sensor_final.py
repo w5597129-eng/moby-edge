@@ -165,7 +165,7 @@ FREQ_DHT     = 1.0
 FREQ_VIB     = 16.0
 FREQ_SOUND   = 16.0
 FREQ_IMU     = 16.0
-FREQ_PRESS   = 16.0
+FREQ_PRESS   = 1.0
 
 # Backward-compatible interval defaults (seconds) — will be overwritten if
 # a corresponding FREQ_* value is provided above.
