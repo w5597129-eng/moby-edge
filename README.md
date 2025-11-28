@@ -58,3 +58,28 @@ mosquitto_sub -h localhost -t "factory/inference/results/#" -v
 ## Next steps & resources
 - 센서(퍼블리셔)와 워커는 각각 별도 터미널(또는 systemd 서비스)에서 실행하여 같은 MQTT 브로커에 연결하도록 구성하세요.
 - 추가 문서(예: systemd 서비스 예시, Dockerfile, 더미 데이터 주입 스크립트)가 필요하면 알려주시면 README에 반영합니다.
+
+1️⃣ Windows PowerShell/CMD 사용 (추천)
+→ 3개의 별개 터미널 창이 자동으로 열림
+```
+cd c:\Users\pinu4\project\python
+.\run_all.bat
+```
+
+2️⃣ Python 통합 런처 (크로스 플랫폼)
+→ 하나의 터미널에서 모든 서비스 관리
+```
+cd c:\Users\pinu4\project\python
+python run_all.py
+```
+
+✅ 로그 통합 관리
+✅ Ctrl+C로 모든 서비스 동시 종료
+✅ 프로세스 모니터링
+3️⃣ Linux/Raspberry Pi (bash script)
+```
+cd /path/to/project/python
+bash run_all.sh
+```
+
+→ 백그라운드에서 모든 프로세스 실행
