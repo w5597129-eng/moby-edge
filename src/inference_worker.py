@@ -154,55 +154,9 @@ def _make_mqtt_client(client_id: str) -> mqtt.Client:
                 raise e
 
 
-# [수정 2] if extract_features is None: 조건문을 제거하고 함수를 직접 정의합니다.
-# 이렇게 하면 외부 파일 유무와 상관없이 항상 이 '안전한' 버전이 사용됩니다.
-def _legacy_extract_features(signal: Iterable[float], sampling_rate: float, use_freq_domain: bool = USE_FREQUENCY_DOMAIN) -> list:
-    # 리스트를 numpy 배열로 확실하게 변환 (가장 중요한 부분)
-    signal = np.asarray(list(signal), dtype=float)
-    
-    if signal.size < 2:
-        feature_count = 11 if use_freq_domain else 5
-        return [0.0] * feature_count
+# V17 Feature Extraction (Only Mode)
+# Legacy mode deprecated - project now uses V17 exclusively
 
-    abs_signal = np.abs(signal)
-    max_val = float(np.max(abs_signal))
-    abs_mean = float(np.mean(abs_signal))
-    std = float(np.std(signal))
-    peak_to_peak = float(np.ptp(signal))
-    
-    # 여기서 signal이 numpy 배열이므로 ** 2 연산이 정상 작동합니다.
-    rms = float(np.sqrt(np.mean(signal ** 2)))
-    
-    crest_factor = max_val / rms if rms > 0 else 0.0
-    impulse_factor = max_val / abs_mean if abs_mean > 0 else 0.0
-    mean_val = float(np.mean(signal))
-    time_features = [std, peak_to_peak, crest_factor, impulse_factor, mean_val]
-
-    if not use_freq_domain:
-        return time_features
-
-    signal_centered = signal - np.mean(signal)
-    spectrum = np.abs(rfft(signal_centered))
-    freqs = rfftfreq(signal.size, 1.0 / sampling_rate) if signal.size > 0 else np.array([0.0])
-    dominant_freq = float(freqs[np.argmax(spectrum)]) if spectrum.size > 0 else 0.0
-    spectral_sum = float(np.sum(spectrum))
-    spectral_centroid = float(np.sum(freqs * spectrum) / spectral_sum) if spectral_sum > 0 else 0.0
-    spectral_energy = float(np.sum(spectrum ** 2))
-    
-    spectral_kurt = float(kurtosis(spectrum, fisher=False)) if spectrum.size > 1 else 3.0
-    spectral_skewness = float(skew(spectrum)) if spectrum.size > 1 else 0.0
-    spectral_kurt = 3.0 if np.isnan(spectral_kurt) else spectral_kurt
-    spectral_skewness = 0.0 if np.isnan(spectral_skewness) else spectral_skewness
-    spectral_std = float(np.std(spectrum))
-    freq_features = [
-        dominant_freq,
-        spectral_centroid,
-        spectral_energy,
-        spectral_kurt,
-        spectral_skewness,
-        spectral_std,
-    ]
-    return time_features + freq_features
 
 
 FEATURE_PIPELINES: Dict[str, Callable[[np.ndarray], np.ndarray]] = {}
@@ -379,133 +333,128 @@ class InferenceEngine:
         self._check_v17_availability()
 
     def _check_v17_availability(self):
-        """Check if V17 feature extractor is available."""
+        """Check if V17 feature extractor is available (required)."""
         try:
-            from feature_extractor import extract_features, FEATURE_CONFIG_V17
+            # Try src first, then root directory
+            try:
+                from feature_extractor import extract_features, FEATURE_CONFIG_V17
+            except ImportError:
+                import sys
+                import os
+                src_dir = os.path.dirname(os.path.abspath(__file__))
+                root_dir = os.path.dirname(src_dir)
+                if root_dir not in sys.path:
+                    sys.path.insert(0, root_dir)
+                from feature_extractor import extract_features, FEATURE_CONFIG_V17
+            
             self.v17_available = True
             self.feature_extraction_mode = "v17"
-            print("[INFERENCE_ENGINE] ✅ V17 feature extractor available")
+            print("[INFERENCE_ENGINE] ✅ V17 feature extractor loaded (REQUIRED)")
         except Exception as e:
             self.v17_available = False
-            self.feature_extraction_mode = "legacy"
-            print(f"[INFERENCE_ENGINE] ⚠️  V17 not available, using legacy: {e}")
+            self.feature_extraction_mode = "unavailable"
+            print(f"[INFERENCE_ENGINE] ❌ FATAL: V17 feature extractor not available: {e}")
+            print("[INFERENCE_ENGINE] ❌ V17 is now REQUIRED - legacy mode has been removed")
+            raise RuntimeError(f"V17 feature extractor is mandatory but failed to load: {e}") from e
 
     def _build_feature_vector(self, window_msg: WindowMessage) -> np.ndarray:
-        # Prefer the new multi-axis feature extractor (v17) when available.
-        multi_sensor_extract_features = None
-        FEATURE_CONFIG_V17 = None
+        """Build feature vector using V17 feature extractor (only mode)."""
+        if not self.v17_available:
+            raise RuntimeError("[FEATURE_VECTOR] ❌ V17 feature extractor not available")
         
-        if self.v17_available:
+        try:
+            # Try src first, then root directory
             try:
                 from feature_extractor import extract_features as multi_sensor_extract_features, FEATURE_CONFIG_V17
+            except ImportError:
+                import sys
+                import os
+                src_dir = os.path.dirname(os.path.abspath(__file__))
+                root_dir = os.path.dirname(src_dir)
+                if root_dir not in sys.path:
+                    sys.path.insert(0, root_dir)
+                from feature_extractor import extract_features as multi_sensor_extract_features, FEATURE_CONFIG_V17
+        except Exception as e:
+            raise RuntimeError(f"[FEATURE_VECTOR] ❌ Failed to import V17: {e}") from e
+
+        wf = window_msg.window_fields or {}
+        data_dict = {}
+        sr = float(window_msg.sampling_rate_hz)
+
+        # Accel 3-axis
+        accel_cols = ['fields_accel_x', 'fields_accel_y', 'fields_accel_z']
+        if all(col in wf and wf[col] is not None for col in accel_cols):
+            try:
+                arrays = [np.asarray(wf[col], dtype=float) for col in accel_cols]
+                min_len = min(a.size for a in arrays)
+                if min_len >= 2:
+                    stacked = np.column_stack([a[-min_len:] for a in arrays])
+                    valid_mask = ~np.isnan(stacked).any(axis=1)
+                    if valid_mask.sum() > 0:
+                        data_dict['accel'] = stacked[valid_mask]
+            except Exception:
+                pass
+
+        # Gyro 3-axis
+        gyro_cols = ['fields_gyro_x', 'fields_gyro_y', 'fields_gyro_z']
+        if all(col in wf and wf[col] is not None for col in gyro_cols):
+            try:
+                arrays = [np.asarray(wf[col], dtype=float) for col in gyro_cols]
+                min_len = min(a.size for a in arrays)
+                if min_len >= 2:
+                    stacked = np.column_stack([a[-min_len:] for a in arrays])
+                    valid_mask = ~np.isnan(stacked).any(axis=1)
+                    if valid_mask.sum() > 0:
+                        data_dict['gyro'] = stacked[valid_mask]
+            except Exception:
+                pass
+
+        # Pressure (optional)
+        if 'fields_pressure_hpa' in wf and wf.get('fields_pressure_hpa') is not None:
+            try:
+                arr = np.asarray(wf['fields_pressure_hpa'], dtype=float)
+                arr = arr[~np.isnan(arr)]
+                if arr.size > 0:
+                    data_dict['pressure'] = arr
+            except Exception:
+                pass
+
+        # Temperature (if provided)
+        if 'fields_temperature_c' in wf and wf.get('fields_temperature_c') is not None:
+            try:
+                arr = np.asarray(wf['fields_temperature_c'], dtype=float)
+                arr = arr[~np.isnan(arr)]
+                if arr.size > 0:
+                    data_dict['temperature'] = arr
+            except Exception:
+                pass
+
+        if data_dict:
+            try:
+                feats_dict = multi_sensor_extract_features(data_dict, sr)
+                # Build deterministic feature order using FEATURE_CONFIG_V17
+                ordered_keys = []
+                for sensor_key in ('accel', 'gyro', 'pressure', 'temperature'):
+                    for fname in FEATURE_CONFIG_V17.get(sensor_key, []):
+                        ordered_keys.append(f"{sensor_key}_{fname}")
+
+                vec = [float(feats_dict.get(k, 0.0)) for k in ordered_keys]
+                result = np.asarray(vec, dtype=float).reshape(1, -1)
+                
+                # Validate feature count
+                from inference_interface import EXPECTED_FEATURE_COUNT
+                if result.shape[1] != EXPECTED_FEATURE_COUNT:
+                    print(f"[FEATURE_VECTOR] ⚠️  V17 feature count mismatch: got {result.shape[1]}, expected {EXPECTED_FEATURE_COUNT}")
+                
+                _debug_feature_vector("v17_output", window_msg.sensor_type, result)
+                return result
             except Exception as e:
-                print(f"[FEATURE_VECTOR] ⚠️  V17 import failed: {e}, falling back to legacy")
-                self.v17_available = False
+                # V17 extraction failed - raise error
+                print(f"[FEATURE_VECTOR] ❌ V17 extraction failed: {e}")
+                raise RuntimeError(f"Feature extraction failed with V17: {e}") from e
 
-        # If the multivariate extractor is available, build sensor-level dict (accel/gyro/pressure)
-        if multi_sensor_extract_features is not None:
-            wf = window_msg.window_fields or {}
-            data_dict = {}
-            sr = float(window_msg.sampling_rate_hz)
-
-            # Accel 3-axis
-            accel_cols = ['fields_accel_x', 'fields_accel_y', 'fields_accel_z']
-            if all(col in wf and wf[col] is not None for col in accel_cols):
-                try:
-                    arrays = [np.asarray(wf[col], dtype=float) for col in accel_cols]
-                    min_len = min(a.size for a in arrays)
-                    if min_len >= 2:
-                        stacked = np.column_stack([a[-min_len:] for a in arrays])
-                        valid_mask = ~np.isnan(stacked).any(axis=1)
-                        if valid_mask.sum() > 0:
-                            data_dict['accel'] = stacked[valid_mask]
-                except Exception:
-                    pass
-
-            # Gyro 3-axis
-            gyro_cols = ['fields_gyro_x', 'fields_gyro_y', 'fields_gyro_z']
-            if all(col in wf and wf[col] is not None for col in gyro_cols):
-                try:
-                    arrays = [np.asarray(wf[col], dtype=float) for col in gyro_cols]
-                    min_len = min(a.size for a in arrays)
-                    if min_len >= 2:
-                        stacked = np.column_stack([a[-min_len:] for a in arrays])
-                        valid_mask = ~np.isnan(stacked).any(axis=1)
-                        if valid_mask.sum() > 0:
-                            data_dict['gyro'] = stacked[valid_mask]
-                except Exception:
-                    pass
-
-            # Pressure (optional)
-            if 'fields_pressure_hpa' in wf and wf.get('fields_pressure_hpa') is not None:
-                try:
-                    arr = np.asarray(wf['fields_pressure_hpa'], dtype=float)
-                    arr = arr[~np.isnan(arr)]
-                    if arr.size > 0:
-                        data_dict['pressure'] = arr
-                except Exception:
-                    pass
-
-            # Temperature (if provided)
-            if 'fields_temperature_c' in wf and wf.get('fields_temperature_c') is not None:
-                try:
-                    arr = np.asarray(wf['fields_temperature_c'], dtype=float)
-                    arr = arr[~np.isnan(arr)]
-                    if arr.size > 0:
-                        data_dict['temperature'] = arr
-                except Exception:
-                    pass
-
-            if data_dict:
-                try:
-                    feats_dict = multi_sensor_extract_features(data_dict, sr)
-                    # Build deterministic feature order using FEATURE_CONFIG_V17 if available
-                    ordered_keys = []
-                    if FEATURE_CONFIG_V17 is not None:
-                        for sensor_key in ('accel', 'gyro', 'pressure', 'temperature'):
-                            for fname in FEATURE_CONFIG_V17.get(sensor_key, []):
-                                ordered_keys.append(f"{sensor_key}_{fname}")
-                    else:
-                        ordered_keys = sorted(feats_dict.keys())
-
-                    vec = [float(feats_dict.get(k, 0.0)) for k in ordered_keys]
-                    result = np.asarray(vec, dtype=float).reshape(1, -1)
-                    
-                    # Validate feature count
-                    from inference_interface import EXPECTED_FEATURE_COUNTS
-                    expected = EXPECTED_FEATURE_COUNTS.get("v17", 15)
-                    if result.shape[1] != expected:
-                        print(f"[FEATURE_VECTOR] ⚠️  V17 feature count mismatch: got {result.shape[1]}, expected {expected}")
-                    
-                    _debug_feature_vector("v17_output", window_msg.sensor_type, result)
-                    return result
-                except Exception as e:
-                    # Fall back to legacy per-field extraction below
-                    print(f"[FEATURE_VECTOR] ⚠️  V17 extraction failed: {e}, using legacy")
-                    pass
-
-        # Legacy per-field extractor fallback (unchanged behavior)
-        feats = []
-        for field in SENSOR_FIELDS:
-            sig = window_msg.window_fields.get(field)
-            # [확인] 리스트가 들어와도 numpy 배열로 변환합니다.
-            arr = np.asarray(sig, dtype=float) if sig is not None else np.asarray([])
-            if arr.size < 2:
-                feat_len = 11 if USE_FREQUENCY_DOMAIN else 5
-                feats.extend([0.0] * feat_len)
-            else:
-                feats.extend(_legacy_extract_features(arr, window_msg.sampling_rate_hz, USE_FREQUENCY_DOMAIN))
-        
-        result = np.asarray(feats, dtype=float).reshape(1, -1)
-        
-        # Validate feature count for legacy mode
-        from inference_interface import EXPECTED_FEATURE_COUNTS
-        expected = EXPECTED_FEATURE_COUNTS.get("legacy", 77)
-        if result.shape[1] != expected:
-            print(f"[FEATURE_VECTOR] ⚠️  Legacy feature count: got {result.shape[1]} (expected {expected})")
-        
-        _debug_feature_vector("legacy_output", window_msg.sensor_type, result)
-        return result
+        # No data to extract features from
+        raise RuntimeError("[FEATURE_VECTOR] ❌ No valid sensor data in window")
 
     def process_window(self, window_msg: WindowMessage) -> List[InferenceResultMessage]:
         features = self._build_feature_vector(window_msg)

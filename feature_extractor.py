@@ -38,13 +38,14 @@ def _load_impl() -> Optional[ModuleType]:
 _impl = _load_impl()
 
 if _impl is not None:
-    # Re-export commonly used functions if present
+    # Re-export commonly used functions and constants if present
     for attr in (
         "extract_features_v17",
         "process_multi_sensor_files_v17",
         "extract_features",
+        "FEATURE_CONFIG_V17",
     ):
         if hasattr(_impl, attr):
             globals()[attr] = getattr(_impl, attr)
 
-__all__ = [n for n in ("extract_features_v17", "process_multi_sensor_files_v17", "extract_features") if n in globals()]
+__all__ = [n for n in ("extract_features_v17", "process_multi_sensor_files_v17", "extract_features", "FEATURE_CONFIG_V17") if n in globals()]
