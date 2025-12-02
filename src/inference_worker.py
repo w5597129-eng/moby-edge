@@ -374,14 +374,33 @@ class ModelRunner:
 class InferenceEngine:
     def __init__(self, runners: Optional[List[ModelRunner]] = None):
         self.runners = runners or []
+        self.v17_available = False
+        self.feature_extraction_mode = "legacy"
+        self._check_v17_availability()
+
+    def _check_v17_availability(self):
+        """Check if V17 feature extractor is available."""
+        try:
+            from feature_extractor import extract_features, FEATURE_CONFIG_V17
+            self.v17_available = True
+            self.feature_extraction_mode = "v17"
+            print("[INFERENCE_ENGINE] ✅ V17 feature extractor available")
+        except Exception as e:
+            self.v17_available = False
+            self.feature_extraction_mode = "legacy"
+            print(f"[INFERENCE_ENGINE] ⚠️  V17 not available, using legacy: {e}")
 
     def _build_feature_vector(self, window_msg: WindowMessage) -> np.ndarray:
         # Prefer the new multi-axis feature extractor (v17) when available.
-        try:
-            from feature_extractor import extract_features as multi_sensor_extract_features, FEATURE_CONFIG_V17
-        except Exception:
-            multi_sensor_extract_features = None
-            FEATURE_CONFIG_V17 = None
+        multi_sensor_extract_features = None
+        FEATURE_CONFIG_V17 = None
+        
+        if self.v17_available:
+            try:
+                from feature_extractor import extract_features as multi_sensor_extract_features, FEATURE_CONFIG_V17
+            except Exception as e:
+                print(f"[FEATURE_VECTOR] ⚠️  V17 import failed: {e}, falling back to legacy")
+                self.v17_available = False
 
         # If the multivariate extractor is available, build sensor-level dict (accel/gyro/pressure)
         if multi_sensor_extract_features is not None:
@@ -450,9 +469,19 @@ class InferenceEngine:
                         ordered_keys = sorted(feats_dict.keys())
 
                     vec = [float(feats_dict.get(k, 0.0)) for k in ordered_keys]
-                    return np.asarray(vec, dtype=float).reshape(1, -1)
-                except Exception:
+                    result = np.asarray(vec, dtype=float).reshape(1, -1)
+                    
+                    # Validate feature count
+                    from inference_interface import EXPECTED_FEATURE_COUNTS
+                    expected = EXPECTED_FEATURE_COUNTS.get("v17", 15)
+                    if result.shape[1] != expected:
+                        print(f"[FEATURE_VECTOR] ⚠️  V17 feature count mismatch: got {result.shape[1]}, expected {expected}")
+                    
+                    _debug_feature_vector("v17_output", window_msg.sensor_type, result)
+                    return result
+                except Exception as e:
                     # Fall back to legacy per-field extraction below
+                    print(f"[FEATURE_VECTOR] ⚠️  V17 extraction failed: {e}, using legacy")
                     pass
 
         # Legacy per-field extractor fallback (unchanged behavior)
@@ -466,7 +495,17 @@ class InferenceEngine:
                 feats.extend([0.0] * feat_len)
             else:
                 feats.extend(_legacy_extract_features(arr, window_msg.sampling_rate_hz, USE_FREQUENCY_DOMAIN))
-        return np.asarray(feats, dtype=float).reshape(1, -1)
+        
+        result = np.asarray(feats, dtype=float).reshape(1, -1)
+        
+        # Validate feature count for legacy mode
+        from inference_interface import EXPECTED_FEATURE_COUNTS
+        expected = EXPECTED_FEATURE_COUNTS.get("legacy", 77)
+        if result.shape[1] != expected:
+            print(f"[FEATURE_VECTOR] ⚠️  Legacy feature count: got {result.shape[1]} (expected {expected})")
+        
+        _debug_feature_vector("legacy_output", window_msg.sensor_type, result)
+        return result
 
     def process_window(self, window_msg: WindowMessage) -> List[InferenceResultMessage]:
         features = self._build_feature_vector(window_msg)
@@ -489,6 +528,7 @@ class MQTTInferenceWorker:
         self.client = _make_mqtt_client("sensor_inference_worker")
         self.client.on_message = self._on_message
         self.client.on_connect = self._on_connect
+        self._log_initialization()
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -496,6 +536,17 @@ class MQTTInferenceWorker:
             client.subscribe(f"{WINDOW_TOPIC_ROOT}/#")
         else:
             print(f"Failed to connect to MQTT broker, return code {rc}")
+
+    def _log_initialization(self):
+        """Log inference engine initialization status."""
+        print("\n" + "="*70)
+        print("INFERENCE WORKER INITIALIZATION")
+        print("="*70)
+        print(f"Feature Extraction Mode: {self.engine.feature_extraction_mode.upper()}")
+        print(f"Models Loaded: {len(self.engine.runners)}")
+        for runner in self.engine.runners:
+            print(f"  - {runner.config.name} ({runner.config.sensor_type})")
+        print("="*70 + "\n")
 
     def _on_message(self, client, userdata, msg):
         try:

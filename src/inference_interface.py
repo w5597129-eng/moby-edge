@@ -31,6 +31,12 @@ WINDOW_STEP: float = WINDOW_SIZE - WINDOW_OVERLAP
 WINDOW_TOPIC_ROOT = "factory/inference/windows"
 RESULT_TOPIC_ROOT = "factory/inference/results"
 
+# Validation thresholds
+EXPECTED_FEATURE_COUNTS = {
+    "v17": 15,  # accel(9) + gyro(4) + env(2)
+    "legacy": 77  # 11 per field * 7 fields
+}
+
 
 def current_timestamp_ns() -> int:
     """Return the current timestamp in nanoseconds (Py3.7 compatible)."""
