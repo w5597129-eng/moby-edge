@@ -34,6 +34,29 @@ RESULT_TOPIC_ROOT = "factory/inference/results"
 # V17 Feature Count (Legacy mode deprecated)
 EXPECTED_FEATURE_COUNT = 15  # accel(9) + gyro(4) + env(2)
 
+# Canonical feature order for V17 - MUST match training data column order
+# This ensures consistency between CSV training and real-time inference
+FEATURE_ORDER_V17 = [
+    # Accel features (9)
+    'accel_VectorRMS',
+    'accel_PC1_PeakToPeak',
+    'accel_VectorCrestFactor',
+    'accel_PC1_DominantFreq',
+    'accel_PC1_RMSF',
+    'accel_PC1_VarianceRatio',
+    'accel_PC1_Direction_X',
+    'accel_PC1_Direction_Y',
+    'accel_PC1_Direction_Z',
+    # Gyro features (4)
+    'gyro_VectorRMS',
+    'gyro_STD_X',
+    'gyro_STD_Y',
+    'gyro_STD_Z',
+    # Environment features (2)
+    'pressure_Mean',
+    'temperature_Mean',
+]
+
 
 def current_timestamp_ns() -> int:
     """Return the current timestamp in nanoseconds (Py3.7 compatible)."""

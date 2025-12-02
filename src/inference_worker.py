@@ -30,6 +30,8 @@ from inference_interface import (
     model_result_topic,
     result_topic,
     WINDOW_TOPIC_ROOT,
+    FEATURE_ORDER_V17,
+    EXPECTED_FEATURE_COUNT,
 )
 
 
@@ -432,17 +434,12 @@ class InferenceEngine:
         if data_dict:
             try:
                 feats_dict = multi_sensor_extract_features(data_dict, sr)
-                # Build deterministic feature order using FEATURE_CONFIG_V17
-                ordered_keys = []
-                for sensor_key in ('accel', 'gyro', 'pressure', 'temperature'):
-                    for fname in FEATURE_CONFIG_V17.get(sensor_key, []):
-                        ordered_keys.append(f"{sensor_key}_{fname}")
-
-                vec = [float(feats_dict.get(k, 0.0)) for k in ordered_keys]
+                # Use canonical feature order from inference_interface for consistency
+                # This ensures the same order as training data CSV columns
+                vec = [float(feats_dict.get(k, 0.0)) for k in FEATURE_ORDER_V17]
                 result = np.asarray(vec, dtype=float).reshape(1, -1)
                 
                 # Validate feature count
-                from inference_interface import EXPECTED_FEATURE_COUNT
                 if result.shape[1] != EXPECTED_FEATURE_COUNT:
                     print(f"[FEATURE_VECTOR] ⚠️  V17 feature count mismatch: got {result.shape[1]}, expected {EXPECTED_FEATURE_COUNT}")
                 

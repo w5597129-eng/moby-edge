@@ -161,10 +161,13 @@ TOPIC_IMU_WINDOWS = window_topic("accel_gyro")
 #   FREQ_DHT = 1.0   # 1 Hz -> 1.0 second interval
 #   FREQ_IMU = 20.0  # 20 Hz -> 0.05 second interval
 # Set a value to None to fall back to INTERVAL_* defaults below.
+#
+# IMPORTANT: FREQ_IMU must match the training data sampling rate (12.8Hz)
+# to ensure consistent feature extraction (especially FFT-based features).
 FREQ_DHT     = 1.0
-FREQ_VIB     = 16.0
-FREQ_SOUND   = 16.0
-FREQ_IMU     = 16.0
+FREQ_VIB     = 12.8
+FREQ_SOUND   = 12.8
+FREQ_IMU     = 12.8  # Must match training data (~78.125ms resample rate)
 FREQ_PRESS   = 1.0
 
 # Backward-compatible interval defaults (seconds) — will be overwritten if
@@ -319,6 +322,10 @@ def main():
         gyro_y_buf,
         gyro_z_buf,
     ]
+    # Pressure/Temperature buffers for synchronized window inference
+    pressure_buf = deque(maxlen=buf_len)
+    temperature_buf = deque(maxlen=buf_len)
+    
     dht = adafruit_dht.DHT11(board.D4, use_pulseio=False)
     vib_ch, sound_ch = init_ads()
     bus = smbus2.SMBus(1)
@@ -463,6 +470,12 @@ def main():
                             'fields_gyro_y':  list(gyro_y_buf),
                             'fields_gyro_z':  list(gyro_z_buf),
                         }
+                        # Include pressure/temperature if available (for consistent feature extraction)
+                        if len(pressure_buf) > 0:
+                            window_signals['fields_pressure_hpa'] = list(pressure_buf)
+                        if len(temperature_buf) > 0:
+                            window_signals['fields_temperature_c'] = list(temperature_buf)
+                        
                         window_msg = WindowMessage(
                             sensor_type="accel_gyro",
                             sampling_rate_hz=sampling_rate_imu,
@@ -518,6 +531,13 @@ def main():
 
                 # publish (use memory buffer on failure)
                 buffer_publish(client, TOPIC_PRESS, payload)
+                
+                # Add to pressure/temperature buffers for synchronized inference
+                try:
+                    pressure_buf.append(pressure_h)
+                    temperature_buf.append(temp_c)
+                except Exception:
+                    pass
 
                 alt_text = " Alt={:.2f}m".format(altitude_m) if altitude_m is not None else ""
                 last_line["pressure"] = "BMP180    | T={:.2f}C  P={:.2f}hPa{}".format(temp_c, pressure_h, alt_text)
