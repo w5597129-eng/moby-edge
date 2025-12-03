@@ -49,7 +49,7 @@ except Exception:
 # ==============================
 # Config
 # ==============================
-BROKER = "192.168.80.192"
+BROKER = "192.168.80.85"
 PORT = 1883
 # 버퍼 경로
 # In-memory publish buffer to avoid SD writes on Raspberry Pi
@@ -165,10 +165,10 @@ TOPIC_IMU_WINDOWS = window_topic("accel_gyro")
 # IMPORTANT: FREQ_IMU must match the training data sampling rate (12.8Hz)
 # to ensure consistent feature extraction (especially FFT-based features).
 FREQ_DHT     = 1.0
-FREQ_VIB     = 12.8
-FREQ_SOUND   = 12.8
-FREQ_IMU     = 12.8  # Must match training data (~78.125ms resample rate)
-FREQ_PRESS   = 1.0
+FREQ_VIB     = 16
+FREQ_SOUND   = 16
+FREQ_IMU     = 16  # Must match training data (~78.125ms resample rate)
+FREQ_PRESS   = 16
 
 # Backward-compatible interval defaults (seconds) — will be overwritten if
 # a corresponding FREQ_* value is provided above.

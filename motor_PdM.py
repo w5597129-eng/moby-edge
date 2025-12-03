@@ -20,7 +20,7 @@ PWMA = 18
 STBY = 23
 
 PWM_FREQ = 100     # Hz
-DUTY = 68          # 0..100 (%)
+DUTY = 85          # 0..100 (%)
 
 stop_flag = False
 
@@ -41,7 +41,7 @@ IR_PIN = 17
 DEAD_TIME_MS = 200
 AVG_WINDOW = 10
 PRINT_EVERY = 1
-MQTT_BROKER = "192.168.80.143"
+MQTT_BROKER = "192.168.80.85"
 MQTT_PORT = 1883
 MQTT_TOPIC = "factory/conveyor/ir"
 MQTT_CLIENT_ID = "IR_Conveyor_Sensor"

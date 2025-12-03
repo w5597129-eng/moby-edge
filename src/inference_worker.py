@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import pickle
+import signal
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -467,7 +469,7 @@ def build_default_engine() -> InferenceEngine:
 
 
 class MQTTInferenceWorker:
-    def __init__(self, broker: str = "192.168.80.143", port: int = 1883):
+    def __init__(self, broker: str = "192.168.80.85", port: int = 1883):
         self.broker = broker
         self.port = port
         self.engine = build_default_engine()
@@ -522,7 +524,26 @@ class MQTTInferenceWorker:
     def start(self):
         print(f"Starting Inference Worker on {self.broker}:{self.port}...")
         self.client.connect(self.broker, self.port, 60)
-        self.client.loop_forever()
+        self.client.loop_start()
+        global stop_flag
+        try:
+            while not stop_flag:
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.stop()
+
+    def stop(self):
+        """Gracefully stop the worker."""
+        global stop_flag
+        stop_flag = True
+        try:
+            self.client.loop_stop()
+            self.client.disconnect()
+        except Exception:
+            pass
+        print("\n[INFERENCE_WORKER] Clean exit.")
 
     @staticmethod
     def _best_scoring_result(results: List[InferenceResultMessage]) -> Optional[InferenceResultMessage]:
@@ -558,23 +579,25 @@ class MQTTInferenceWorker:
         return "n/a"
 
 
+stop_flag = False
+
+def handle_stop(sig, frame):
+    global stop_flag
+    stop_flag = True
+
+signal.signal(signal.SIGINT, handle_stop)
+signal.signal(signal.SIGTERM, handle_stop)
+
+
 def main():
     worker = MQTTInferenceWorker()
-    worker.start()
+    try:
+        worker.start()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        worker.stop()
 
 
 if __name__ == "__main__":
     main()
-
-buf_len = 100
-accel_x_buf = []
-window_pending = False
-
-# [수정 3] 제안된 코드 변경 사항을 여기에 통합합니다.
-if len(accel_x_buf) >= buf_len and not window_pending:
-    ...
-    window_pending = True
-    accel_x_buf.clear()
-    ...
-elif window_pending and len(accel_x_buf) == 0:
-    window_pending = False
