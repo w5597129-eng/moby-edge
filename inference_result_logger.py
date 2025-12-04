@@ -2,13 +2,20 @@ import csv
 import json
 import time
 import os
+from pathlib import Path
 import paho.mqtt.client as mqtt
 from datetime import datetime
+
+# .env 파일에서 환경변수 로드
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 
 # ==========================================
 # 설정
 # ==========================================
-import os
 BROKER = os.getenv("MQTT_BROKER", "192.168.80.208")
 PORT = int(os.getenv("MQTT_PORT", "1883"))
 TOPIC_ROOT = "factory/inference/results/#"  # 모든 추론 결과 구독

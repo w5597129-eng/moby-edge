@@ -30,6 +30,14 @@ import paho.mqtt.client as mqtt
 import os
 import threading
 from collections import deque
+from pathlib import Path
+
+# .env 파일에서 환경변수 로드
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
 
 from inference_interface import (
     InferenceResultMessage,

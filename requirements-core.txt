@@ -5,6 +5,7 @@ pandas
 joblib
 paho-mqtt
 PyYAML
+python-dotenv
 # Pin sklearn to match model/training environment; change if you resave models
 scikit-learn==1.7.2
 threadpoolctl
