@@ -488,12 +488,19 @@ class MQTTInferenceWorker:
         self.client.on_connect = self._on_connect
         self._log_initialization()
 
-    def _on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
+    def _on_connect(self, client, userdata, flags, rc, *args):
+        # *args for paho-mqtt v2 compatibility (properties parameter)
+        if isinstance(rc, int):
+            rc_value = rc
+        else:
+            # paho-mqtt v2: rc is ReasonCode object
+            rc_value = rc.value if hasattr(rc, 'value') else 0
+        if rc_value == 0:
             print(f"Connected to MQTT broker at {self.broker}:{self.port}")
             client.subscribe(f"{WINDOW_TOPIC_ROOT}/#")
+            print(f"Subscribed to {WINDOW_TOPIC_ROOT}/#")
         else:
-            print(f"Failed to connect to MQTT broker, return code {rc}")
+            print(f"Failed to connect to MQTT broker, return code {rc_value}")
 
     def _log_initialization(self):
         """Log inference engine initialization status."""
@@ -516,25 +523,93 @@ class MQTTInferenceWorker:
                 if result.model_name:
                     topic = model_result_topic(result.sensor_type, result.model_name)
                 client.publish(topic, json.dumps(result.to_payload()))
-                print(
-                    f"INFERENCE | {result.sensor_type} | model={result.model_name} "
-                    f"score={result.score}"
-                )
-            top_result = self._best_scoring_result(results)
-            if top_result and top_result.score is not None:
-                label = self._label_for_result(top_result)
-                print(
-                    "TOP RESULT |"
-                    f" {top_result.sensor_type} | model={top_result.model_name}"
-                    f" | score={top_result.score:.4f} | label={label}"
-                )
+            
+            # 모니터링 출력
+            self._print_monitoring(results)
         except Exception as exc:
             print(f"Inference MQTT handler error: {exc}")
 
+    def _print_monitoring(self, results: List[InferenceResultMessage]):
+        """터미널에 Isolation Forest, S1, S2 분류 결과 모니터링 출력"""
+        iforest_score = None
+        s1_result = {"normal": 0.0, "yellow": 0.0, "red": 0.0, "label": "N/A"}
+        s2_result = {"normal": 0.0, "yellow": 0.0, "red": 0.0, "label": "N/A"}
+        
+        for result in results:
+            fields = (result.context_payload or {}).get("fields", {})
+            
+            if result.model_name == "isolation_forest":
+                iforest_score = fields.get("iforest_score", result.score)
+            
+            elif result.model_name == "mlp_classifier":
+                # S1 확률
+                s1_normal = fields.get("mlp_s1_prob_normal", 0.0)
+                s1_yellow = fields.get("mlp_s1_prob_yellow", 0.0)
+                s1_red = fields.get("mlp_s1_prob_red", 0.0)
+                s1_result = {
+                    "normal": s1_normal,
+                    "yellow": s1_yellow,
+                    "red": s1_red,
+                    "label": self._get_class_label(s1_normal, s1_yellow, s1_red)
+                }
+                
+                # S2 확률
+                s2_normal = fields.get("mlp_s2_prob_normal", 0.0)
+                s2_yellow = fields.get("mlp_s2_prob_yellow", 0.0)
+                s2_red = fields.get("mlp_s2_prob_red", 0.0)
+                s2_result = {
+                    "normal": s2_normal,
+                    "yellow": s2_yellow,
+                    "red": s2_red,
+                    "label": self._get_class_label(s2_normal, s2_yellow, s2_red)
+                }
+        
+        # 터미널 출력
+        print("\n" + "=" * 70)
+        print(f"{'INFERENCE MONITORING':^70}")
+        print("=" * 70)
+        
+        # Isolation Forest
+        if iforest_score is not None:
+            # Isolation Forest: 음수 = 이상, 양수 = 정상
+            anomaly_status = "🔴 ANOMALY" if iforest_score < 0 else "🟢 NORMAL"
+            print(f"[Isolation Forest] Score: {iforest_score:+.4f}  |  {anomaly_status}")
+        else:
+            print(f"[Isolation Forest] Score: N/A")
+        
+        print("-" * 70)
+        
+        # S1 분류 결과
+        s1_emoji = {"NORMAL": "🟢", "YELLOW": "🟡", "RED": "🔴", "N/A": "⚪"}.get(s1_result["label"], "⚪")
+        print(f"[S1 Classification] {s1_emoji} {s1_result['label']}")
+        print(f"    Normal: {s1_result['normal']*100:6.2f}%  |  Yellow: {s1_result['yellow']*100:6.2f}%  |  Red: {s1_result['red']*100:6.2f}%")
+        
+        print("-" * 70)
+        
+        # S2 분류 결과
+        s2_emoji = {"NORMAL": "🟢", "YELLOW": "🟡", "RED": "🔴", "N/A": "⚪"}.get(s2_result["label"], "⚪")
+        print(f"[S2 Classification] {s2_emoji} {s2_result['label']}")
+        print(f"    Normal: {s2_result['normal']*100:6.2f}%  |  Yellow: {s2_result['yellow']*100:6.2f}%  |  Red: {s2_result['red']*100:6.2f}%")
+        
+        print("=" * 70 + "\n")
+
+    @staticmethod
+    def _get_class_label(normal: float, yellow: float, red: float) -> str:
+        """확률값에서 최대값 레이블 반환"""
+        probs = {"NORMAL": normal, "YELLOW": yellow, "RED": red}
+        return max(probs, key=probs.get)
+
     def start(self):
         print(f"Starting Inference Worker on {self.broker}:{self.port}...")
-        self.client.connect(self.broker, self.port, 60)
+        print(f"Attempting to connect to MQTT broker...")
+        try:
+            self.client.connect(self.broker, self.port, 60)
+            print(f"Connection initiated, starting loop...")
+        except Exception as e:
+            print(f"Failed to connect: {e}")
+            return
         self.client.loop_start()
+        print(f"MQTT loop started, waiting for messages...")
         global stop_flag
         try:
             while not stop_flag:

@@ -21,7 +21,7 @@ PWMA = 18
 STBY = 23
 
 PWM_FREQ = 100     # Hz
-DUTY = 85          # 0..100 (%)
+DUTY = 75          # 0..100 (%)
 
 stop_flag = False
 
