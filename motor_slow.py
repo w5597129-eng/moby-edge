@@ -130,7 +130,8 @@ def record_hit(t_ns):
         msg = {
             "cycles": cycle_count,
             "last_cycle_ms": round(dt_ms, 2),
-            "avg_cycle_ms": round(avg_ms, 2) if avg_ms == avg_ms else None
+            "avg_cycle_ms": round(avg_ms, 2) if avg_ms == avg_ms else None,
+            "timestamp_ns": t_ns
         }
         _publish_ir(msg)
 
