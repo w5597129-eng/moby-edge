@@ -1,7 +1,7 @@
 # Configuration for src/sensor_final.py
 # Keys match loader expectations in sensor_final.py
 
-broker: "localhost"
+broker: "192.168.80.208"
 port: 1883
 
 buffer_dir: "/home/wise/deployment/data/buffer/"

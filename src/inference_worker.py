@@ -469,7 +469,10 @@ def build_default_engine() -> InferenceEngine:
 
 
 class MQTTInferenceWorker:
-    def __init__(self, broker: str = "192.168.80.85", port: int = 1883):
+    def __init__(self, broker: str = None, port: int = None):
+        import os
+        broker = broker or os.getenv("MQTT_BROKER", "192.168.80.208")
+        port = port or int(os.getenv("MQTT_PORT", "1883"))
         self.broker = broker
         self.port = port
         self.engine = build_default_engine()

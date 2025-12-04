@@ -36,7 +36,7 @@ except Exception:
 # ==============================
 # Config
 # ==============================
-BROKER = "localhost"
+BROKER = "192.168.80.208"
 PORT = 1883
 
 TOPIC_DHT     = "factory/sensor/dht11"

@@ -9,7 +9,7 @@ from datetime import datetime
 # 설정
 # ==========================================
 import os
-BROKER = os.getenv("MQTT_BROKER", "192.168.80.143")
+BROKER = os.getenv("MQTT_BROKER", "192.168.80.208")
 PORT = int(os.getenv("MQTT_PORT", "1883"))
 TOPIC_ROOT = "factory/inference/results/#"  # 모든 추론 결과 구독
 SAVE_DIR = "./inference_results"            # CSV 저장 경로

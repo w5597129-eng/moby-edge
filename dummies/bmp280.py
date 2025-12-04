@@ -27,7 +27,7 @@ DEVICE_ID = "Env_A_01"
 SENSOR_TYPE = "pressure"
 SENSOR_MODEL = "BMP180"
 
-BROKER_HOST = "localhost"
+BROKER_HOST = "192.168.80.208"
 BROKER_PORT = 1883
 MQTT_TOPIC = "factory/sensor/pressure"
 PUBLISH_INTERVAL_SEC = 2.0

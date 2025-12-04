@@ -8,7 +8,7 @@ import paho.mqtt.client as mqtt
 dhtDevice = adafruit_dht.DHT11(board.D4, use_pulseio=False)
 
 # --- MQTT setup ---
-broker = "localhost"  # use "localhost" since broker runs on Pi
+broker = "192.168.80.208"  # use "localhost" since broker runs on Pi
 port = 1883
 topic = "factory/sensor/dht11"
 client = mqtt.Client("pi_dht11_pub")

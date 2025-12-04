@@ -1,5 +1,5 @@
 mqtt:
-  broker: "localhost"
+  broker: "192.168.80.208"
   port: 1883
   topics:
     dht11: "factory/sensor/dht11"

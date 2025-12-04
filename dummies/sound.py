@@ -23,7 +23,7 @@ ADC_CHANNEL = 1        # A1 (sound sensor AO connected to A1)
 ADC_GAIN = 1           # For 3.3V sensors, 1 or 2 is recommended
 
 # MQTT
-BROKER_HOST = "localhost"   # If broker runs on Pi, use localhost; otherwise, use the broker IP
+BROKER_HOST = "192.168.80.208"   # If broker runs on Pi, use localhost; otherwise, use the broker IP
 BROKER_PORT = 1883
 MQTT_TOPIC = "factory/sensor/sound"
 MQTT_QOS = 0

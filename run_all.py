@@ -116,9 +116,9 @@ def main():
     try:
         import paho.mqtt.client as mqtt
         client = mqtt.Client(client_id="launcher_test")
-        result = client.connect("192.168.80.192", 1883, 5)
+        result = client.connect("192.168.80.208", 1883, 5)
         if result == 0:
-            log("MQTT broker reachable at 192.168.80.192:1883", "SUCCESS")
+            log("MQTT broker reachable at 192.168.80.208:1883", "SUCCESS")
         else:
             log(f"MQTT broker returned code {result} (may still work)", "WARN")
         client.disconnect()

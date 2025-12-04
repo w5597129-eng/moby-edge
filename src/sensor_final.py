@@ -49,7 +49,7 @@ except Exception:
 # ==============================
 # Config
 # ==============================
-BROKER = "192.168.80.85"
+BROKER = os.getenv("MQTT_BROKER", "192.168.80.208")
 PORT = 1883
 # 버퍼 경로
 # In-memory publish buffer to avoid SD writes on Raspberry Pi

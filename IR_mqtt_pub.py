@@ -11,6 +11,7 @@ try:
 except Exception:
     pass
 
+import os
 import time
 import statistics
 import json
@@ -19,7 +20,7 @@ import paho.mqtt.client as mqtt
 # ==============================
 # MQTT Config
 # ==============================
-MQTT_BROKER = "localhost"  # Change to your MQTT broker's address
+MQTT_BROKER = os.getenv("MQTT_BROKER", "192.168.80.208")  # Change to your MQTT broker's address
 MQTT_PORT = 1883
 MQTT_TOPIC = "factory/conveyor/ir"
 MQTT_CLIENT_ID = "IR_Conveyor_Sensor"

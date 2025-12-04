@@ -22,7 +22,7 @@ DEVICE_ID = "Motor_A_01"
 SENSOR_TYPE = "imu"
 SENSOR_MODEL = "MPU-6050"
 
-MQTT_BROKER = "localhost"
+MQTT_BROKER = "192.168.80.208"
 MQTT_PORT = 1883
 MQTT_TOPIC = "factory/sensor/mpu6050"
 MQTT_QOS = 0

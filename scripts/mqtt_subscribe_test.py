@@ -4,12 +4,13 @@ Simple MQTT subscriber to validate `sensor_final` payloads.
 Usage:
   python scripts/mqtt_subscribe_test.py --duration 30
 """
+import os
 import time
 import json
 import argparse
 import paho.mqtt.client as mqtt
 
-DEFAULT_BROKER = "localhost"
+DEFAULT_BROKER = os.getenv("MQTT_BROKER", "192.168.80.208")
 DEFAULT_PORT = 1883
 
 BASE_TOPICS = [

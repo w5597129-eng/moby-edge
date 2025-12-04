@@ -8,7 +8,7 @@ from datetime import datetime
 # ==========================================
 # 설정
 # ==========================================
-BROKER = "localhost"
+BROKER = os.getenv("MQTT_BROKER", "192.168.80.208")
 PORT = 1883
 TOPIC_ROOT = "factory/sensor/#"  # 모든 센서 데이터 구독
 SAVE_DIR = "./sensor_data"       # CSV 저장 경로

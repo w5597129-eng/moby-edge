@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: us-ascii -*-
 
+import os
 import time
 import signal
 import threading
@@ -27,7 +28,7 @@ IR_PIN = 17
 DEAD_TIME_MS = 200
 AVG_WINDOW = 10
 PRINT_EVERY = 1
-MQTT_BROKER = "192.168.80.85"
+MQTT_BROKER = os.getenv("MQTT_BROKER", "192.168.80.208")
 MQTT_PORT = 1883
 MQTT_TOPIC = "factory/conveyor/ir"
 MQTT_CLIENT_ID = "IR_Conveyor_Sensor"
