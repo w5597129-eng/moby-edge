@@ -483,7 +483,6 @@ def build_default_engine() -> InferenceEngine:
 
 class MQTTInferenceWorker:
     def __init__(self, broker: str = None, port: int = None):
-        import os
         from pathlib import Path
         # .env 파일에서 환경변수 로드
         try:
@@ -491,7 +490,7 @@ class MQTTInferenceWorker:
             load_dotenv(Path(__file__).resolve().parent.parent / ".env")
         except ImportError:
             pass
-        broker = broker or os.getenv("MQTT_BROKER", "192.168.80.208")
+        broker = broker or os.getenv("MQTT_BROKER", "192.168.80.234")
         port = port or int(os.getenv("MQTT_PORT", "1883"))
         self.broker = broker
         self.port = port
