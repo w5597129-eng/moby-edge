@@ -1,7 +1,8 @@
--- Require core runtime by default and optionally hardware deps.
--- See `requirements-core.txt` and `requirements-hw.txt`.
-
--r requirements-core.txt
-
-# To install hardware-specific packages on a Raspberry Pi (optional):
-# pip install -r requirements-hw.txt
+numpy
+pandas
+scipy
+scikit-learn
+joblib
+lightgbm
+paho-mqtt
+pyyaml
