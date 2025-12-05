@@ -44,3 +44,9 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# 학습 및 분석용
+analyze_*.py
+check_*.py
+window_feature_analysis.ipynb
+train_*.py
