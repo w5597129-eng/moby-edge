@@ -383,10 +383,25 @@ class InferenceEngine:
 
         wf = window_msg.window_fields or {}
         data_dict = {}
-        # Use fixed sampling rate to match training data (12.8Hz)
-        # Ignoring window_msg.sampling_rate_hz to ensure consistency
-        from inference_interface import FIXED_SAMPLING_RATE
-        sr = FIXED_SAMPLING_RATE
+        
+        # [수정] 고정 12.8Hz 대신 실제 타임스탬프 기반으로 샘플링 레이트 계산
+        timestamps = wf.get('timestamp_ns')
+        if timestamps and len(timestamps) > 1:
+            try:
+                ts_arr = np.asarray(timestamps, dtype=float)
+                duration_sec = (ts_arr[-1] - ts_arr[0]) / 1e9
+                num_samples = len(ts_arr)
+                if duration_sec > 0:
+                    sr = (num_samples - 1) / duration_sec
+                else:
+                    sr = window_msg.sampling_rate_hz if window_msg.sampling_rate_hz else 16.0
+            except Exception:
+                sr = window_msg.sampling_rate_hz if window_msg.sampling_rate_hz else 16.0
+        else:
+            # 타임스탬프가 없으면 윈도우 헤더 정보 사용
+            sr = window_msg.sampling_rate_hz if window_msg.sampling_rate_hz else 16.0
+        
+        print(f"[DEBUG] Actual SR used for FFT: {sr:.2f} Hz")
 
         # Accel 3-axis
         accel_cols = ['fields_accel_x', 'fields_accel_y', 'fields_accel_z']
