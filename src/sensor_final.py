@@ -173,9 +173,9 @@ TOPIC_IMU_WINDOWS = window_topic("accel_gyro")
 # IMPORTANT: FREQ_IMU must match the training data sampling rate (12.8Hz)
 # to ensure consistent feature extraction (especially FFT-based features).
 FREQ_DHT     = 1.0
-FREQ_VIB     = 16
-FREQ_SOUND   = 16
-FREQ_IMU     = 16  # Must match training data (~78.125ms resample rate)
+FREQ_VIB     = 12.8
+FREQ_SOUND   = 12.8
+FREQ_IMU     = 12.8  # Must match training data (~78.125ms resample rate)
 FREQ_PRESS   = 1   # BMP180 읽기 80-130ms 소요 → 1Hz로 낮춤 (다른 센서 블로킹 방지)
 
 # Backward-compatible interval defaults (seconds) — will be overwritten if

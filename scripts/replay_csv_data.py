@@ -41,6 +41,9 @@ from src.inference_interface import (
     current_timestamp_ns,
 )
 
+# Replay 전용 토픽 (inference_worker_replay.py와 동일)
+REPLAY_WINDOW_TOPIC_ROOT = "factory/inference/replay/windows"
+
 
 def parse_influxdb_csv(csv_path: str) -> pd.DataFrame:
     """
@@ -173,12 +176,18 @@ def replay_csv(
     window_size: float,
     window_overlap: float,
     interval: float = 5.0,
+    replay_mode: bool = False,
 ):
     """CSV 데이터를 실시간처럼 재생"""
+    
+    # 토픽 루트 선택
+    topic_root = REPLAY_WINDOW_TOPIC_ROOT if replay_mode else WINDOW_TOPIC_ROOT
+    mode_str = "🔄 REPLAY MODE (분리된 토픽)" if replay_mode else "📡 LIVE MODE (기존 토픽)"
     
     print(f"\n{'='*70}")
     print(f"{'CSV DATA REPLAY':^70}")
     print(f"{'='*70}")
+    print(f"{mode_str}")
     print(f"CSV 파일: {csv_path}")
     if ir_csv_path:
         print(f"IR CSV 파일: {ir_csv_path}")
@@ -229,7 +238,7 @@ def replay_csv(
     
     # 윈도우 설정
     window_step = window_size - window_overlap
-    topic = f"{WINDOW_TOPIC_ROOT}/{sensor_type}"
+    topic = f"{topic_root}/{sensor_type}"
     
     print(f"\n🚀 재생 시작! (Ctrl+C로 중단)")
     print(f"📤 MQTT 토픽: {topic}")
@@ -327,6 +336,8 @@ def main():
                         help=f'윈도우 오버랩(초) (기본: {WINDOW_OVERLAP})')
     parser.add_argument('--interval', type=float, default=5.0,
                         help='윈도우 발행 간격(초) (기본: 5.0)')
+    parser.add_argument('--replay', action='store_true',
+                        help='Replay 전용 토픽 사용 (inference_worker_replay.py와 함께 사용)')
     
     args = parser.parse_args()
     
@@ -348,6 +359,7 @@ def main():
         window_size=args.window_size,
         window_overlap=args.window_overlap,
         interval=args.interval,
+        replay_mode=args.replay,
     )
 
 
