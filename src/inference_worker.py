@@ -6,22 +6,23 @@ import os
 import pickle
 import signal
 import time
+import queue
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import joblib
 import numpy as np
-from scipy.fft import rfft, rfftfreq
-from scipy.stats import kurtosis, skew
 
-# [수정 1] 외부 feature_extractor 임포트 시도 구문을 삭제했습니다.
-# 이제 무조건 아래에 정의된 extract_features 함수를 사용합니다.
+# [수정] lightgbm 임포트 (joblib 로드 시 필요할 수 있음)
+try:
+    import lightgbm as lgb
+except ImportError:
+    pass
 
 import paho.mqtt.client as mqtt
-try:
-    import onnxruntime as ort
-except Exception:
-    ort = None
+
+# [삭제] ONNX 관련 코드 제거됨
 
 from inference_interface import (
     InferenceResultMessage,
@@ -90,59 +91,24 @@ DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
         max_retries=3,
     ),
     ModelConfig(
-        name="mlp_classifier",
+        name="lgbm_classifier",
         sensor_type="accel_gyro",
         model_path=_resolve_path(
-            "models/mlp_classifier.onnx",
+            "models/lgbm_classifier.joblib",
         ),
-        scaler_path=_resolve_path(
-            "models/scaler_mlp.pkl",
-        ),
-        score_field="mlp_score",
+        scaler_path=None, 
+        score_field="lgbm_score",
         feature_pipeline="identity",
         max_retries=2,
         probability_field_names=[
-            "mlp_s1_prob_normal",
-            "mlp_s1_prob_yellow",
-            "mlp_s1_prob_red",
-            "mlp_s2_prob_normal",
-            "mlp_s2_prob_yellow",
-            "mlp_s2_prob_red",
+            "lgbm_prob_normal",
+            "lgbm_prob_s1_yellow",
+            "lgbm_prob_s1_red",
+            "lgbm_prob_s2_yellow",
+            "lgbm_prob_s2_red",
         ],
     ),
 ]
-
-
-# PyTorch support removed: project uses ONNX / joblib/pickle models only.
-
-
-class ONNXMLPWrapper:
-    def __init__(self, onnx_path: str, providers: Optional[list] = None):
-        if ort is None:
-            raise RuntimeError("onnxruntime not available")
-        self.onnx_path = onnx_path
-        chosen_providers = providers if providers is not None else ["CPUExecutionProvider"]
-        self.session = ort.InferenceSession(onnx_path, providers=chosen_providers)
-        self.input_name = self.session.get_inputs()[0].name
-        self.output_name = self.session.get_outputs()[0].name
-
-    def _predict_proba(self, X: np.ndarray) -> np.ndarray:
-        if X is None:
-            return np.zeros((0, 2))
-        arr = np.asarray(X, dtype=np.float32)
-        if arr.ndim == 1:
-            arr = arr.reshape(1, -1)
-        res = self.session.run([self.output_name], {self.input_name: arr})[0]
-        return np.asarray(res)
-
-    def score_samples(self, X: np.ndarray) -> np.ndarray:
-        proba = self._predict_proba(X)
-        if proba.size == 0:
-            return np.array([])
-        return np.linalg.norm(proba, axis=1)
-
-    def predict_proba_raw(self, X: np.ndarray) -> np.ndarray:
-        return self._predict_proba(X)
 
 
 def _make_mqtt_client(client_id: str) -> mqtt.Client:
@@ -156,11 +122,6 @@ def _make_mqtt_client(client_id: str) -> mqtt.Client:
                 return mqtt.Client(client_id=client_id, userdata=None, protocol=mqtt.MQTTv311)
             except Exception:
                 raise e
-
-
-# V17 Feature Extraction (Only Mode)
-# Legacy mode deprecated - project now uses V17 exclusively
-
 
 
 FEATURE_PIPELINES: Dict[str, Callable[[np.ndarray], np.ndarray]] = {}
@@ -211,19 +172,10 @@ class ModelRunner:
             self.scaler = _load_artifact(self.config.scaler_path)
 
     def reload_artifacts(self):
-        model_path = self.config.model_path
-        if model_path and os.path.exists(model_path) and os.path.splitext(model_path)[1].lower() == ".onnx":
-            try:
-                self.model = ONNXMLPWrapper(model_path)
-            except Exception as exc:
-                print(f"Failed to load ONNX model ({model_path}): {exc}")
-                self.model = None
-            loaded_model = None
-        else:
-            loaded_model = _load_artifact(self.config.model_path)
+        loaded_model = _load_artifact(self.config.model_path)
         if loaded_model is not None:
-            # Loaded artifact is used directly. PyTorch checkpoint handling removed.
             self.model = loaded_model
+            
         loaded_scaler = _load_artifact(self.config.scaler_path)
         if loaded_scaler is not None:
             self.scaler = loaded_scaler
@@ -248,13 +200,14 @@ class ModelRunner:
     def _predict_proba_values(self, prepared: np.ndarray) -> Optional[np.ndarray]:
         if self.model is None:
             return None
+        
         predict_fn = None
-        for attr in ("predict_proba", "predict_proba_raw"):
-            if hasattr(self.model, attr):
-                predict_fn = getattr(self.model, attr)
-                break
+        if hasattr(self.model, "predict_proba"):
+             predict_fn = self.model.predict_proba
+        
         if predict_fn is None:
             return None
+            
         try:
             res = predict_fn(prepared)
             arr = np.asarray(res, dtype=float)
@@ -276,25 +229,30 @@ class ModelRunner:
 
     def _run_once(self, window_msg: WindowMessage, features: np.ndarray) -> InferenceResultMessage:
         prepared = self._prepare_features(features)
-        probas = self._predict_proba_values(prepared)
+        
         score = None
-        if self.model is not None:
-            try:
-                score = float(self.model.score_samples(prepared)[0])
-            except Exception as exc:
-                print(f"Model score error ({self.config.name}):", exc)
+        probas = None
+        
+        if self.config.name == "isolation_forest":
+             if self.model is not None:
+                try:
+                    score = float(self.model.decision_function(prepared)[0])
+                except Exception as exc:
+                    print(f"Model score error ({self.config.name}):", exc)
+        else:
+            probas = self._predict_proba_values(prepared)
+            pass
+
+            
         context_payload: Dict[str, Any] = {"fields": {}}
         context_fields = context_payload["fields"]
         self._attach_probability_fields(context_fields, probas)
-        if self.config.name == "mlp_classifier" and probas is not None and probas.size > 0:
-            row = probas[0]
-            red_probs = [row[i] for i in (2, 5) if i < len(row)]
-            if red_probs:
-                score = float(max(red_probs))
-                context_fields[self.config.score_field] = score
-        elif score is not None:
+        
+        if score is not None:
             context_fields[self.config.score_field] = score
+            
         context_payload.setdefault("timestamp_ns", window_msg.timestamp_ns or current_timestamp_ns())
+        
         return InferenceResultMessage(
             sensor_type=window_msg.sensor_type,
             score=score,
@@ -384,7 +342,6 @@ class InferenceEngine:
         wf = window_msg.window_fields or {}
         data_dict = {}
         
-        # [수정] 타임스탬프 배열에서 실제 SR 계산 (없으면 12.8Hz 폴백)
         timestamps = wf.get('timestamp_ns')
         if timestamps and len(timestamps) > 1:
             try:
@@ -449,23 +406,18 @@ class InferenceEngine:
         if data_dict:
             try:
                 feats_dict = multi_sensor_extract_features(data_dict, sr)
-                # Use canonical feature order from inference_interface for consistency
-                # This ensures the same order as training data CSV columns
                 vec = [float(feats_dict.get(k, 0.0)) for k in FEATURE_ORDER_V18]
                 result = np.asarray(vec, dtype=float).reshape(1, -1)
                 
-                # Validate feature count
                 if result.shape[1] != EXPECTED_FEATURE_COUNT:
                     print(f"[FEATURE_VECTOR] ⚠️  V18 feature count mismatch: got {result.shape[1]}, expected {EXPECTED_FEATURE_COUNT}")
                 
                 _debug_feature_vector("v18_output", window_msg.sensor_type, result)
                 return result
             except Exception as e:
-                # V18 extraction failed - raise error
                 print(f"[FEATURE_VECTOR] ❌ V18 extraction failed: {e}")
                 raise RuntimeError(f"Feature extraction failed with V18: {e}") from e
 
-        # No data to extract features from
         raise RuntimeError("[FEATURE_VECTOR] ❌ No valid sensor data in window")
 
     def process_window(self, window_msg: WindowMessage) -> List[InferenceResultMessage]:
@@ -484,7 +436,6 @@ def build_default_engine() -> InferenceEngine:
 class MQTTInferenceWorker:
     def __init__(self, broker: str = None, port: int = None):
         from pathlib import Path
-        # .env 파일에서 환경변수 로드
         try:
             from dotenv import load_dotenv
             load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -498,14 +449,17 @@ class MQTTInferenceWorker:
         self.client = _make_mqtt_client("sensor_inference_worker")
         self.client.on_message = self._on_message
         self.client.on_connect = self._on_connect
+        
+        self.message_queue = queue.Queue(maxsize=100) 
+        self.is_running = False
+        self.worker_thread = None
+        
         self._log_initialization()
 
     def _on_connect(self, client, userdata, flags, rc, *args):
-        # *args for paho-mqtt v2 compatibility (properties parameter)
         if isinstance(rc, int):
             rc_value = rc
         else:
-            # paho-mqtt v2: rc is ReasonCode object
             rc_value = rc.value if hasattr(rc, 'value') else 0
         if rc_value == 0:
             print(f"Connected to MQTT broker at {self.broker}:{self.port}")
@@ -515,7 +469,6 @@ class MQTTInferenceWorker:
             print(f"Failed to connect to MQTT broker, return code {rc_value}")
 
     def _log_initialization(self):
-        """Log inference engine initialization status."""
         print("\n" + "="*70)
         print("INFERENCE WORKER INITIALIZATION")
         print("="*70)
@@ -527,25 +480,41 @@ class MQTTInferenceWorker:
 
     def _on_message(self, client, userdata, msg):
         try:
-            payload = json.loads(msg.payload.decode("utf-8"))
-            window_msg = WindowMessage.from_payload(payload)
-            results = self.engine.process_window(window_msg)
-            for result in results:
-                topic = result_topic(result.sensor_type)
-                if result.model_name:
-                    topic = model_result_topic(result.sensor_type, result.model_name)
-                client.publish(topic, json.dumps(result.to_payload()))
-            
-            # 모니터링 출력
-            self._print_monitoring(results)
+            self.message_queue.put_nowait(msg)
+        except queue.Full:
+            print(f"[WARNING] Message queue full! Dropping message from {msg.topic}")
         except Exception as exc:
-            print(f"Inference MQTT handler error: {exc}")
+            print(f"Enqueuing error: {exc}")
+
+    def _processing_loop(self):
+        print("[WORKER] Processing thread started.")
+        while self.is_running:
+            try:
+                msg = self.message_queue.get(timeout=1.0) 
+            except queue.Empty:
+                continue
+
+            try:
+                payload = json.loads(msg.payload.decode("utf-8"))
+                window_msg = WindowMessage.from_payload(payload)
+                results = self.engine.process_window(window_msg)
+                for result in results:
+                    topic = result_topic(result.sensor_type)
+                    if result.model_name:
+                        topic = model_result_topic(result.sensor_type, result.model_name)
+                    self.client.publish(topic, json.dumps(result.to_payload()))
+                self._print_monitoring(results)
+                
+            except Exception as exc:
+                print(f"Processing error in worker thread: {exc}")
+            finally:
+                self.message_queue.task_done()
+        print("[WORKER] Processing thread stopped.")
 
     def _print_monitoring(self, results: List[InferenceResultMessage]):
-        """터미널에 Isolation Forest, S1, S2 분류 결과 모니터링 출력"""
         iforest_score = None
-        s1_result = {"normal": 0.0, "yellow": 0.0, "red": 0.0, "label": "N/A"}
-        s2_result = {"normal": 0.0, "yellow": 0.0, "red": 0.0, "label": "N/A"}
+        lgbm_prob = {}
+        lgbm_label = "N/A"
         
         for result in results:
             fields = (result.context_payload or {}).get("fields", {})
@@ -553,37 +522,23 @@ class MQTTInferenceWorker:
             if result.model_name == "isolation_forest":
                 iforest_score = fields.get("iforest_score", result.score)
             
-            elif result.model_name == "mlp_classifier":
-                # S1 확률
-                s1_normal = fields.get("mlp_s1_prob_normal", 0.0)
-                s1_yellow = fields.get("mlp_s1_prob_yellow", 0.0)
-                s1_red = fields.get("mlp_s1_prob_red", 0.0)
-                s1_result = {
-                    "normal": s1_normal,
-                    "yellow": s1_yellow,
-                    "red": s1_red,
-                    "label": self._get_class_label(s1_normal, s1_yellow, s1_red)
+            elif result.model_name == "lgbm_classifier":
+                # 5-class Probabilities
+                lgbm_prob = {
+                    "NORMAL": fields.get("lgbm_prob_normal", 0.0),
+                    "S1_YELLOW": fields.get("lgbm_prob_s1_yellow", 0.0),
+                    "S1_RED": fields.get("lgbm_prob_s1_red", 0.0),
+                    "S2_YELLOW": fields.get("lgbm_prob_s2_yellow", 0.0),
+                    "S2_RED": fields.get("lgbm_prob_s2_red", 0.0),
                 }
-                
-                # S2 확률
-                s2_normal = fields.get("mlp_s2_prob_normal", 0.0)
-                s2_yellow = fields.get("mlp_s2_prob_yellow", 0.0)
-                s2_red = fields.get("mlp_s2_prob_red", 0.0)
-                s2_result = {
-                    "normal": s2_normal,
-                    "yellow": s2_yellow,
-                    "red": s2_red,
-                    "label": self._get_class_label(s2_normal, s2_yellow, s2_red)
-                }
-        
-        # 터미널 출력
+                lgbm_label = max(lgbm_prob, key=lgbm_prob.get)
+
         print("\n" + "=" * 70)
         print(f"{'INFERENCE MONITORING':^70}")
         print("=" * 70)
         
         # Isolation Forest
         if iforest_score is not None:
-            # Isolation Forest: 음수 = 이상, 양수 = 정상
             anomaly_status = "🔴 ANOMALY" if iforest_score < 0 else "🟢 NORMAL"
             print(f"[Isolation Forest] Score: {iforest_score:+.4f}  |  {anomaly_status}")
         else:
@@ -591,35 +546,40 @@ class MQTTInferenceWorker:
         
         print("-" * 70)
         
-        # S1 분류 결과
-        s1_emoji = {"NORMAL": "🟢", "YELLOW": "🟡", "RED": "🔴", "N/A": "⚪"}.get(s1_result["label"], "⚪")
-        print(f"[S1 Classification] {s1_emoji} {s1_result['label']}")
-        print(f"    Normal: {s1_result['normal']*100:6.2f}%  |  Yellow: {s1_result['yellow']*100:6.2f}%  |  Red: {s1_result['red']*100:6.2f}%")
+        # LightGBM 결과 출력
+        # Label emoji mapping
+        emoji_map = {
+            "NORMAL": "🟢",
+            "S1_YELLOW": "🟡",
+            "S1_RED": "🔴",
+            "S2_YELLOW": "🟡",
+            "S2_RED": "�",
+            "N/A": "⚪"
+        }
+        emoji = emoji_map.get(lgbm_label, "⚪")
         
-        print("-" * 70)
-        
-        # S2 분류 결과
-        s2_emoji = {"NORMAL": "🟢", "YELLOW": "🟡", "RED": "🔴", "N/A": "⚪"}.get(s2_result["label"], "⚪")
-        print(f"[S2 Classification] {s2_emoji} {s2_result['label']}")
-        print(f"    Normal: {s2_result['normal']*100:6.2f}%  |  Yellow: {s2_result['yellow']*100:6.2f}%  |  Red: {s2_result['red']*100:6.2f}%")
+        print(f"[LightGBM Diagnosis] {emoji} {lgbm_label}")
+        print(f"    Normal    : {lgbm_prob.get('NORMAL', 0)*100:6.2f}%")
+        print(f"    S1 Warning: {lgbm_prob.get('S1_YELLOW', 0)*100:6.2f}%  |  S1 Fault: {lgbm_prob.get('S1_RED', 0)*100:6.2f}%")
+        print(f"    S2 Warning: {lgbm_prob.get('S2_YELLOW', 0)*100:6.2f}%  |  S2 Fault: {lgbm_prob.get('S2_RED', 0)*100:6.2f}%")
         
         print("=" * 70 + "\n")
 
-    @staticmethod
-    def _get_class_label(normal: float, yellow: float, red: float) -> str:
-        """확률값에서 최대값 레이블 반환"""
-        probs = {"NORMAL": normal, "YELLOW": yellow, "RED": red}
-        return max(probs, key=probs.get)
-
     def start(self):
         print(f"Starting Inference Worker on {self.broker}:{self.port}...")
+        self.is_running = True
+        self.worker_thread = threading.Thread(target=self._processing_loop, name="InferenceWorker")
+        self.worker_thread.start()
+        
         print(f"Attempting to connect to MQTT broker...")
         try:
             self.client.connect(self.broker, self.port, 60)
             print(f"Connection initiated, starting loop...")
         except Exception as e:
             print(f"Failed to connect: {e}")
+            self.is_running = False
             return
+
         self.client.loop_start()
         print(f"MQTT loop started, waiting for messages...")
         global stop_flag
@@ -632,48 +592,18 @@ class MQTTInferenceWorker:
             self.stop()
 
     def stop(self):
-        """Gracefully stop the worker."""
         global stop_flag
         stop_flag = True
+        self.is_running = False
         try:
             self.client.loop_stop()
             self.client.disconnect()
         except Exception:
             pass
+        if self.worker_thread and self.worker_thread.is_alive():
+            print("[INFERENCE_WORKER] Waiting for processing thread to finish...")
+            self.worker_thread.join(timeout=5.0)
         print("\n[INFERENCE_WORKER] Clean exit.")
-
-    @staticmethod
-    def _best_scoring_result(results: List[InferenceResultMessage]) -> Optional[InferenceResultMessage]:
-        scored_results = [res for res in results if res.score is not None]
-        if not scored_results:
-            return None
-        return max(scored_results, key=lambda res: res.score)
-
-    @staticmethod
-    def _label_for_result(result: InferenceResultMessage) -> str:
-        if result is None:
-            return "n/a"
-        fields = (result.context_payload or {}).get("fields") or {}
-        for candidate in ("label", "anomaly_label"):
-            value = fields.get(candidate)
-            if value is not None:
-                return str(value)
-        prob_entries = [
-            (key, float(value))
-            for key, value in fields.items()
-            if isinstance(value, (int, float)) and "_prob_" in key.lower()
-        ]
-        if prob_entries:
-            best_key, _ = max(prob_entries, key=lambda item: item[1])
-            if "_prob_" in best_key:
-                prefix, suffix = best_key.split("_prob_", 1)
-                return f"{prefix}:{suffix}"
-            return best_key
-        if result.model_name:
-            return result.model_name
-        if result.sensor_type:
-            return result.sensor_type
-        return "n/a"
 
 
 stop_flag = False
