@@ -6,8 +6,12 @@ import time
 import signal
 import threading
 import json
+from dotenv import load_dotenv
 import RPi.GPIO as GPIO
 import paho.mqtt.client as mqtt
+
+# Load .env file
+load_dotenv()
 
 # ======================================
 # Config
@@ -24,7 +28,7 @@ CYCLE_SEC = 3.63
 
 # Duty settings
 NORMAL_DUTY = 75        # normal speed duty
-DIP_DUTY = 30           # slowed-down duty (do not use 0)  # red_30 yellow_60
+DIP_DUTY = 60           # slowed-down duty (do not use 0)  # red_30 yellow_60
 
 # Where in the cycle the dip happens (0.0 ~ 1.0)
 # Example: dip starts at 40% of the cycle and lasts 20% of the cycle
@@ -71,7 +75,7 @@ IR_PIN = 17
 DEAD_TIME_MS = 200
 AVG_WINDOW = 10
 PRINT_EVERY = 1
-MQTT_BROKER = os.getenv("MQTT_BROKER", "192.168.80.208")
+MQTT_BROKER = os.getenv("MQTT_BROKER", "192.168.80.234")
 MQTT_PORT = 1883
 MQTT_TOPIC = "factory/conveyor/ir"
 MQTT_CLIENT_ID = "IR_Conveyor_Sensor"
@@ -84,7 +88,7 @@ cycle_count = 0
 ir_thread = None
 
 def now_ns():
-    return time.monotonic_ns()
+    return time.time_ns()
 
 def init_mqtt():
     global mqtt_client
@@ -130,7 +134,13 @@ def record_hit(t_ns):
         msg = {
             "cycles": cycle_count,
             "last_cycle_ms": round(dt_ms, 2),
-            "avg_cycle_ms": round(avg_ms, 2) if avg_ms == avg_ms else None
+            "avg_cycle_ms": round(avg_ms, 2) if avg_ms == avg_ms else None,
+            "timestamp_ns": t_ns,
+            "health": None,
+            "slope": None,
+            "rul_cycles": None,
+            "rul_hours": None,
+            "fail_time": None
         }
         _publish_ir(msg)
 
