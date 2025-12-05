@@ -384,24 +384,22 @@ class InferenceEngine:
         wf = window_msg.window_fields or {}
         data_dict = {}
         
-        # [수정] 고정 12.8Hz 대신 실제 타임스탬프 기반으로 샘플링 레이트 계산
+        # [수정] 타임스탬프 배열에서 실제 SR 계산 (없으면 12.8Hz 폴백)
         timestamps = wf.get('timestamp_ns')
         if timestamps and len(timestamps) > 1:
             try:
-                ts_arr = np.asarray(timestamps, dtype=float)
-                duration_sec = (ts_arr[-1] - ts_arr[0]) / 1e9
-                num_samples = len(ts_arr)
+                ts_array = np.asarray(timestamps, dtype=np.int64)
+                duration_sec = (ts_array[-1] - ts_array[0]) / 1e9
                 if duration_sec > 0:
-                    sr = (num_samples - 1) / duration_sec
+                    sr = (len(ts_array) - 1) / duration_sec
                 else:
-                    sr = window_msg.sampling_rate_hz if window_msg.sampling_rate_hz else 16.0
+                    sr = 12.8
             except Exception:
-                sr = window_msg.sampling_rate_hz if window_msg.sampling_rate_hz else 16.0
+                sr = 12.8
         else:
-            # 타임스탬프가 없으면 윈도우 헤더 정보 사용
-            sr = window_msg.sampling_rate_hz if window_msg.sampling_rate_hz else 16.0
+            sr = 12.8
         
-        print(f"[DEBUG] Actual SR used for FFT: {sr:.2f} Hz")
+        print(f"[DEBUG] Actual SR from timestamps: {sr:.2f} Hz (samples={len(timestamps) if timestamps else 0})")
 
         # Accel 3-axis
         accel_cols = ['fields_accel_x', 'fields_accel_y', 'fields_accel_z']

@@ -176,7 +176,7 @@ FREQ_DHT     = 1.0
 FREQ_VIB     = 16
 FREQ_SOUND   = 16
 FREQ_IMU     = 16  # Must match training data (~78.125ms resample rate)
-FREQ_PRESS   = 16
+FREQ_PRESS   = 1   # BMP180 읽기 80-130ms 소요 → 1Hz로 낮춤 (다른 센서 블로킹 방지)
 
 # Backward-compatible interval defaults (seconds) — will be overwritten if
 # a corresponding FREQ_* value is provided above.
@@ -333,6 +333,8 @@ def main():
     # Pressure/Temperature buffers for synchronized window inference
     pressure_buf = deque(maxlen=buf_len)
     temperature_buf = deque(maxlen=buf_len)
+    # Timestamp buffer for SR calculation in inference_worker
+    timestamp_buf = deque(maxlen=buf_len)
     
     dht = adafruit_dht.DHT11(board.D4, use_pulseio=False)
     vib_ch, sound_ch = init_ads()
@@ -459,12 +461,14 @@ def main():
                 buffer_publish(client, TOPIC_IMU, payload)
                 # append to ring buffers for windowed inference
                 try:
+                    ts_now = payload.get("timestamp_ns") or now_ns()
                     accel_x_buf.append(ax)
                     accel_y_buf.append(ay)
                     accel_z_buf.append(az)
                     gyro_x_buf.append(gx)
                     gyro_y_buf.append(gy)
                     gyro_z_buf.append(gz)
+                    timestamp_buf.append(ts_now)
                 except Exception:
                     pass
                 # enqueue window for inference when buffer full
@@ -477,6 +481,7 @@ def main():
                             'fields_gyro_x':  list(gyro_x_buf),
                             'fields_gyro_y':  list(gyro_y_buf),
                             'fields_gyro_z':  list(gyro_z_buf),
+                            'timestamp_ns':   list(timestamp_buf),  # 타임스탬프 배열 추가
                         }
                         # Include pressure/temperature if available (for consistent feature extraction)
                         if len(pressure_buf) > 0:
@@ -496,9 +501,13 @@ def main():
                             for buf in axis_buffers:
                                 while len(buf) > overlap_samples:
                                     buf.popleft()
+                            # 타임스탬프 버퍼도 동일하게 처리
+                            while len(timestamp_buf) > overlap_samples:
+                                timestamp_buf.popleft()
                         else:
                             for buf in axis_buffers:
                                 buf.clear()
+                            timestamp_buf.clear()
                 except Exception:
                     pass
                 last_line["accel_gyro"] = (
