@@ -383,7 +383,10 @@ class InferenceEngine:
 
         wf = window_msg.window_fields or {}
         data_dict = {}
-        sr = float(window_msg.sampling_rate_hz)
+        # Use fixed sampling rate to match training data (12.8Hz)
+        # Ignoring window_msg.sampling_rate_hz to ensure consistency
+        from inference_interface import FIXED_SAMPLING_RATE
+        sr = FIXED_SAMPLING_RATE
 
         # Accel 3-axis
         accel_cols = ['fields_accel_x', 'fields_accel_y', 'fields_accel_z']

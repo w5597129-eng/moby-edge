@@ -29,6 +29,10 @@ WINDOW_SIZE: float = 10.0
 WINDOW_OVERLAP: float = 5.0
 WINDOW_STEP: float = WINDOW_SIZE - WINDOW_OVERLAP
 
+# Fixed sampling rate for feature extraction (must match training data)
+# Training used resample_rate='78.125ms' = 12.8Hz
+FIXED_SAMPLING_RATE: float = 12.8
+
 WINDOW_TOPIC_ROOT = "factory/inference/windows"
 RESULT_TOPIC_ROOT = "factory/inference/results"
 
