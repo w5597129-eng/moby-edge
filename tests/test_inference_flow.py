@@ -214,70 +214,65 @@ def test_feature_order_matches_training_csv():
     the expected order from training CSV files.
     
     This test ensures consistency between:
-    1. FEATURE_ORDER_V17 in inference_interface.py
-    2. FEATURE_CONFIG_V17 in feature_extractor.py
+    1. FEATURE_ORDER_V18 in inference_interface.py
+    2. FEATURE_CONFIG_V18 in feature_extractor.py
     3. Actual CSV column order from training data
     """
-    from inference_interface import FEATURE_ORDER_V17, EXPECTED_FEATURE_COUNT
+    from inference_interface import FEATURE_ORDER_V18, EXPECTED_FEATURE_COUNT
     
-    # Expected feature order based on FEATURE_CONFIG_V17 in feature_extractor.py
+    # Expected feature order based on FEATURE_CONFIG_V18 in feature_extractor.py
     expected_order = [
-        # Accel (9 features)
+        # Accel (5 features)
         'accel_VectorRMS',
         'accel_PC1_PeakToPeak',
-        'accel_VectorCrestFactor',
         'accel_PC1_DominantFreq',
         'accel_PC1_RMSF',
         'accel_PC1_VarianceRatio',
-        'accel_PC1_Direction_X',
-        'accel_PC1_Direction_Y',
-        'accel_PC1_Direction_Z',
-        # Gyro (4 features)
-        'gyro_VectorRMS',
+        # Gyro (3 features)
         'gyro_STD_X',
         'gyro_STD_Y',
         'gyro_STD_Z',
-        # Environment (2 features)
-        'pressure_Mean',
-        'temperature_Mean',
+        # IR Counter (2 features)
+        'ir_AvgCycleTime',
+        'ir_CycleJitter',
     ]
     
-    assert len(FEATURE_ORDER_V17) == EXPECTED_FEATURE_COUNT, \
-        f"Feature count mismatch: {len(FEATURE_ORDER_V17)} vs {EXPECTED_FEATURE_COUNT}"
+    assert len(FEATURE_ORDER_V18) == EXPECTED_FEATURE_COUNT, \
+        f"Feature count mismatch: {len(FEATURE_ORDER_V18)} vs {EXPECTED_FEATURE_COUNT}"
     
-    assert FEATURE_ORDER_V17 == expected_order, \
-        f"Feature order mismatch!\nExpected: {expected_order}\nGot: {FEATURE_ORDER_V17}"
+    assert FEATURE_ORDER_V18 == expected_order, \
+        f"Feature order mismatch!\nExpected: {expected_order}\nGot: {FEATURE_ORDER_V18}"
 
 
 def test_feature_extraction_produces_correct_count():
     """
     Verify that feature extraction produces the expected number of features.
     """
-    from inference_interface import EXPECTED_FEATURE_COUNT, FEATURE_ORDER_V17
+    from inference_interface import EXPECTED_FEATURE_COUNT, FEATURE_ORDER_V18
     
     # Import feature extractor
     try:
-        from feature_extractor import extract_features, FEATURE_CONFIG_V17
+        from feature_extractor import extract_features, FEATURE_CONFIG_V18
     except ImportError:
         import sys
         import os
         src_dir = pathlib.Path(__file__).resolve().parents[1] / "src"
         sys.path.insert(0, str(src_dir))
-        from feature_extractor import extract_features, FEATURE_CONFIG_V17
+        from feature_extractor import extract_features, FEATURE_CONFIG_V18
     
     # Create synthetic test data
     n_samples = 128  # ~10 seconds at 12.8Hz
     data_dict = {
         'accel': np.random.randn(n_samples, 3) * 0.1,
         'gyro': np.random.randn(n_samples, 3) * 10,
-        'pressure': np.random.randn(n_samples) * 10 + 1013,
-        'temperature': np.random.randn(n_samples) * 5 + 25,
+        'ir_avg': np.random.rand(n_samples) * 100 + 50,    # avg_cycle_ms
+        'ir_last': np.random.rand(n_samples) * 100 + 50,   # last_cycle_ms
     }
     
     features = extract_features(data_dict, sampling_rate=12.8)
     
     # Verify all expected features are present
-    for feature_name in FEATURE_ORDER_V17:
+    for feature_name in FEATURE_ORDER_V18:
         assert feature_name in features, f"Missing feature: {feature_name}"
     
     # Verify feature count

@@ -32,7 +32,7 @@ from inference_interface import (
     model_result_topic,
     result_topic,
     WINDOW_TOPIC_ROOT,
-    FEATURE_ORDER_V17,
+    FEATURE_ORDER_V18,
     EXPECTED_FEATURE_COUNT,
 )
 
@@ -337,11 +337,11 @@ class InferenceEngine:
         self._check_v17_availability()
 
     def _check_v17_availability(self):
-        """Check if V17 feature extractor is available (required)."""
+        """Check if V18 feature extractor is available (required)."""
         try:
             # Try src first, then root directory
             try:
-                from feature_extractor import extract_features, FEATURE_CONFIG_V17
+                from feature_extractor import extract_features, FEATURE_CONFIG_V18
             except ImportError:
                 import sys
                 import os
@@ -349,27 +349,27 @@ class InferenceEngine:
                 root_dir = os.path.dirname(src_dir)
                 if root_dir not in sys.path:
                     sys.path.insert(0, root_dir)
-                from feature_extractor import extract_features, FEATURE_CONFIG_V17
+                from feature_extractor import extract_features, FEATURE_CONFIG_V18
             
             self.v17_available = True
-            self.feature_extraction_mode = "v17"
-            print("[INFERENCE_ENGINE] ✅ V17 feature extractor loaded (REQUIRED)")
+            self.feature_extraction_mode = "v18"
+            print("[INFERENCE_ENGINE] ✅ V18 feature extractor loaded (REQUIRED)")
         except Exception as e:
             self.v17_available = False
             self.feature_extraction_mode = "unavailable"
-            print(f"[INFERENCE_ENGINE] ❌ FATAL: V17 feature extractor not available: {e}")
-            print("[INFERENCE_ENGINE] ❌ V17 is now REQUIRED - legacy mode has been removed")
-            raise RuntimeError(f"V17 feature extractor is mandatory but failed to load: {e}") from e
+            print(f"[INFERENCE_ENGINE] ❌ FATAL: V18 feature extractor not available: {e}")
+            print("[INFERENCE_ENGINE] ❌ V18 is now REQUIRED - legacy mode has been removed")
+            raise RuntimeError(f"V18 feature extractor is mandatory but failed to load: {e}") from e
 
     def _build_feature_vector(self, window_msg: WindowMessage) -> np.ndarray:
-        """Build feature vector using V17 feature extractor (only mode)."""
+        """Build feature vector using V18 feature extractor (only mode)."""
         if not self.v17_available:
-            raise RuntimeError("[FEATURE_VECTOR] ❌ V17 feature extractor not available")
+            raise RuntimeError("[FEATURE_VECTOR] ❌ V18 feature extractor not available")
         
         try:
             # Try src first, then root directory
             try:
-                from feature_extractor import extract_features as multi_sensor_extract_features, FEATURE_CONFIG_V17
+                from feature_extractor import extract_features as multi_sensor_extract_features, FEATURE_CONFIG_V18
             except ImportError:
                 import sys
                 import os
@@ -377,9 +377,9 @@ class InferenceEngine:
                 root_dir = os.path.dirname(src_dir)
                 if root_dir not in sys.path:
                     sys.path.insert(0, root_dir)
-                from feature_extractor import extract_features as multi_sensor_extract_features, FEATURE_CONFIG_V17
+                from feature_extractor import extract_features as multi_sensor_extract_features, FEATURE_CONFIG_V18
         except Exception as e:
-            raise RuntimeError(f"[FEATURE_VECTOR] ❌ Failed to import V17: {e}") from e
+            raise RuntimeError(f"[FEATURE_VECTOR] ❌ Failed to import V18: {e}") from e
 
         wf = window_msg.window_fields or {}
         data_dict = {}
@@ -413,23 +413,20 @@ class InferenceEngine:
             except Exception:
                 pass
 
-        # Pressure (optional)
-        if 'fields_pressure_hpa' in wf and wf.get('fields_pressure_hpa') is not None:
+        # IR Counter data (avg_cycle_ms, last_cycle_ms)
+        avg_cycle_col = 'fields_avg_cycle_ms'
+        last_cycle_col = 'fields_last_cycle_ms'
+        if avg_cycle_col in wf and last_cycle_col in wf:
             try:
-                arr = np.asarray(wf['fields_pressure_hpa'], dtype=float)
-                arr = arr[~np.isnan(arr)]
-                if arr.size > 0:
-                    data_dict['pressure'] = arr
-            except Exception:
-                pass
-
-        # Temperature (if provided)
-        if 'fields_temperature_c' in wf and wf.get('fields_temperature_c') is not None:
-            try:
-                arr = np.asarray(wf['fields_temperature_c'], dtype=float)
-                arr = arr[~np.isnan(arr)]
-                if arr.size > 0:
-                    data_dict['temperature'] = arr
+                avg_arr = np.asarray(wf[avg_cycle_col], dtype=float)
+                last_arr = np.asarray(wf[last_cycle_col], dtype=float)
+                # Filter out NaN values
+                avg_valid = avg_arr[~np.isnan(avg_arr)]
+                last_valid = last_arr[~np.isnan(last_arr)]
+                min_len = min(len(avg_valid), len(last_valid))
+                if min_len > 0:
+                    data_dict['ir_avg'] = avg_valid[:min_len]
+                    data_dict['ir_last'] = last_valid[:min_len]
             except Exception:
                 pass
 
@@ -438,19 +435,19 @@ class InferenceEngine:
                 feats_dict = multi_sensor_extract_features(data_dict, sr)
                 # Use canonical feature order from inference_interface for consistency
                 # This ensures the same order as training data CSV columns
-                vec = [float(feats_dict.get(k, 0.0)) for k in FEATURE_ORDER_V17]
+                vec = [float(feats_dict.get(k, 0.0)) for k in FEATURE_ORDER_V18]
                 result = np.asarray(vec, dtype=float).reshape(1, -1)
                 
                 # Validate feature count
                 if result.shape[1] != EXPECTED_FEATURE_COUNT:
-                    print(f"[FEATURE_VECTOR] ⚠️  V17 feature count mismatch: got {result.shape[1]}, expected {EXPECTED_FEATURE_COUNT}")
+                    print(f"[FEATURE_VECTOR] ⚠️  V18 feature count mismatch: got {result.shape[1]}, expected {EXPECTED_FEATURE_COUNT}")
                 
-                _debug_feature_vector("v17_output", window_msg.sensor_type, result)
+                _debug_feature_vector("v18_output", window_msg.sensor_type, result)
                 return result
             except Exception as e:
-                # V17 extraction failed - raise error
-                print(f"[FEATURE_VECTOR] ❌ V17 extraction failed: {e}")
-                raise RuntimeError(f"Feature extraction failed with V17: {e}") from e
+                # V18 extraction failed - raise error
+                print(f"[FEATURE_VECTOR] ❌ V18 extraction failed: {e}")
+                raise RuntimeError(f"Feature extraction failed with V18: {e}") from e
 
         # No data to extract features from
         raise RuntimeError("[FEATURE_VECTOR] ❌ No valid sensor data in window")

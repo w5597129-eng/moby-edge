@@ -24,6 +24,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
 
 # 가상환경
 .venv/
@@ -39,14 +40,26 @@ env/
 
 # 로그 및 데이터
 *.log
-*.csv
+data/
+results/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# 학습 및 분석용
+# 학습 및 분석용 (테스트/실험 파일)
 analyze_*.py
 check_*.py
-window_feature_analysis.ipynb
 train_*.py
+scripts/window_feature_analysis.ipynb
+
+# 임시 모델 파일 (학습 중간 결과)
+models/*.pkl
+models/*.pth
+models/*.pt
+models/*.npz
+!models/mlp_classifier.onnx
+!models/isolation_forest.joblib
+!models/scaler_*.joblib
+!models/scaler_mlp.pkl
+!models/training_summary.json

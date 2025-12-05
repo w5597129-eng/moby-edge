@@ -13,13 +13,14 @@ import time
 
 # Fields used when building feature vectors for inference.
 SENSOR_FIELDS: List[str] = [
-    "fields_pressure_hpa",
     "fields_accel_x",
     "fields_accel_y",
     "fields_accel_z",
     "fields_gyro_x",
     "fields_gyro_y",
     "fields_gyro_z",
+    "fields_avg_cycle_ms",    # IR Counter
+    "fields_last_cycle_ms",   # IR Counter
 ]
 
 # Feature extraction configuration shared between the publisher and worker.
@@ -31,30 +32,25 @@ WINDOW_STEP: float = WINDOW_SIZE - WINDOW_OVERLAP
 WINDOW_TOPIC_ROOT = "factory/inference/windows"
 RESULT_TOPIC_ROOT = "factory/inference/results"
 
-# V17 Feature Count (Legacy mode deprecated)
-EXPECTED_FEATURE_COUNT = 15  # accel(9) + gyro(4) + env(2)
+# V18 Feature Count (Cycle Time & Jitter Added)
+EXPECTED_FEATURE_COUNT = 10  # accel(5) + gyro(3) + ir(2)
 
-# Canonical feature order for V17 - MUST match training data column order
+# Canonical feature order for V18 - MUST match training data column order
 # This ensures consistency between CSV training and real-time inference
-FEATURE_ORDER_V17 = [
-    # Accel features (9)
+FEATURE_ORDER_V18 = [
+    # Accel features (5)
     'accel_VectorRMS',
     'accel_PC1_PeakToPeak',
-    'accel_VectorCrestFactor',
     'accel_PC1_DominantFreq',
     'accel_PC1_RMSF',
     'accel_PC1_VarianceRatio',
-    'accel_PC1_Direction_X',
-    'accel_PC1_Direction_Y',
-    'accel_PC1_Direction_Z',
-    # Gyro features (4)
-    'gyro_VectorRMS',
+    # Gyro features (3)
     'gyro_STD_X',
     'gyro_STD_Y',
     'gyro_STD_Z',
-    # Environment features (2)
-    'pressure_Mean',
-    'temperature_Mean',
+    # IR Counter features (2)
+    'ir_AvgCycleTime',
+    'ir_CycleJitter',
 ]
 
 
