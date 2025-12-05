@@ -62,4 +62,5 @@ models/*.npz
 !models/isolation_forest.joblib
 !models/scaler_*.joblib
 !models/scaler_mlp.pkl
-!models/training_summary.json
+!models/training_summary.json*.pyc
+*.pyo
