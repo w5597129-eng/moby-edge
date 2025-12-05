@@ -6,8 +6,12 @@ import time
 import signal
 import threading
 import json
+from dotenv import load_dotenv
 import RPi.GPIO as GPIO
 import paho.mqtt.client as mqtt
+
+# Load .env file
+load_dotenv()
 
 # ==============================
 # Config

@@ -8,9 +8,13 @@ import threading
 import json
 import collections
 import numpy as np
+from dotenv import load_dotenv
 import RPi.GPIO as GPIO
 import paho.mqtt.client as mqtt
 from datetime import datetime, timedelta
+
+# Load .env file
+load_dotenv()
 
 # ==============================
 # Config
