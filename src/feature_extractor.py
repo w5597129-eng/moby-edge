@@ -1,29 +1,18 @@
 #!/usr/bin/env python3
 """
 Feature Extraction from Sensor Data (InfluxDB Format)
-Version 17 (PCA + Vector Scalarization + FFT Reuse):
-- Vector scalarization: 3-axis → scalar features
-- PCA-based dimensionality reduction
-- FFT reuse optimization
-- Maximum computational efficiency
+Version 18 (Cycle Time & Jitter Added):
+- Removed: Pressure, Temp, Gyro RMS, Direction, Crest Factor
+- Added: Avg Cycle Time, Cycle Jitter (from IR Counter)
+- Logic: Cycle Jitter = last_cycle_ms - avg_cycle_ms
 
-Key Improvements over V16:
-- Feature count: 23 → 15 (34.8% reduction)
-- FFT calls: 6 → 1 (83.3% reduction!) ⭐
-- Speed: ~60-65% faster (FFT-weighted)
-
-Optimizations:
-- PCA: 3 axes → 1 principal component (67% FFT reduction)
-- FFT reuse: Dominant Freq + RMSF share same spectrum (50% additional)
-- Vector RMS: Eliminated redundant sqrt operations
-
-Version 16 (Optimized):
-- Sensor-specific feature extraction (only extract what's needed)
-- Added RMS Frequency (RMSF) feature
-- Reduced feature count from 77(11 per field) to 23
+Target Features: 10 Features
+- Accel (5): VectorRMS, PC1_PeakToPeak, PC1_DominantFreq, PC1_RMSF, PC1_VarianceRatio
+- Gyro (3): STD_X, STD_Y, STD_Z
+- IR (2): AvgCycleTime, CycleJitter
 
 Author: WISE Team, Project MOBY
-Date: 2025-11-21 (Optimized)
+Date: 2025-11-24 (Modified for V18)
 """
 
 import os
@@ -38,32 +27,29 @@ warnings.filterwarnings('ignore')
 # 설정
 # =====================================
 
-# 센서별 추출할 특징 설정 (V17)
-FEATURE_CONFIG_V17 = {
-    # 3축 가속도: 9개 특징 (벡터 스칼라화 + PCA)
+# 센서별 추출할 특징 설정 (V18)
+FEATURE_CONFIG_V18 = {
+    # 3축 가속도: 5개 특징 (핵심 진동/주파수 정보만 유지)
     'accel': [
         'VectorRMS',          # 1. 전체 진동 에너지
         'PC1_PeakToPeak',     # 2. 주축 최대 진폭
-        'VectorCrestFactor',  # 3. 충격도 (vector norm 기반)
-        'PC1_DominantFreq',   # 4. 주축 주파수
-        'PC1_RMSF',           # 5. 주축 고주파 이동
-        'PC1_VarianceRatio',  # 6. 주축 설명력 (단일축 지배도)
-        'PC1_Direction_X',    # 7. 주축 방향 X 성분
-        'PC1_Direction_Y',    # 8. 주축 방향 Y 성분
-        'PC1_Direction_Z'     # 9. 주축 방향 Z 성분
+        'PC1_DominantFreq',   # 3. 주축 주파수
+        'PC1_RMSF',           # 4. 주축 고주파 이동
+        'PC1_VarianceRatio',  # 5. 주축 설명력
     ],
     
-    # 3축 각속도: 4개 특징 (벡터 스칼라화 + 축별 변동성)
+    # 3축 각속도: 3개 특징 (축별 변동성만 유지)
     'gyro': [
-        'VectorRMS',          # 1. 속도 불안정성 총량
-        'STD_X',              # 2. X축 회전 속도 변동성
-        'STD_Y',              # 3. Y축 회전 속도 변동성
-        'STD_Z'               # 4. Z축 회전 속도 변동성
+        'STD_X',              # 6. X축 회전 속도 변동성
+        'STD_Y',              # 7. Y축 회전 속도 변동성
+        'STD_Z'               # 8. Z축 회전 속도 변동성
     ],
     
-    # 환경 센서: 2개 특징
-    'pressure': ['Mean'],
-    'temperature': ['Mean']
+    # IR 카운터 (신규): 2개 특징
+    'ir_counter': [
+        'AvgCycleTime',       # 9. 평균 사이클 타임 (ms)
+        'CycleJitter'         # 10. 사이클 지터 (ms)
+    ]
 }
 
 # 윈도우 설정
@@ -80,7 +66,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def read_influxdb_csv(file_path: str) -> Tuple[pd.DataFrame, float]:
     """
-    InfluxDB CSV 파일 읽기
+    InfluxDB CSV 파일 읽기 (다중 테이블 지원)
     """
     with open(file_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
@@ -102,7 +88,7 @@ def read_influxdb_csv(file_path: str) -> Tuple[pd.DataFrame, float]:
                 df_section = pd.read_csv(StringIO(section_text), skiprows=3, 
                                         dtype={'_time': str, '_value': float, '_field': str})
                 all_dfs.append(df_section)
-            except Exception as e:
+            except Exception:
                 continue
         
         if all_dfs:
@@ -119,6 +105,7 @@ def read_influxdb_csv(file_path: str) -> Tuple[pd.DataFrame, float]:
     df['_value'] = pd.to_numeric(df['_value'], errors='coerce')
     df = df[df['_value'].notna()]
     
+    # Pivot: _field 값을 컬럼으로 변환
     df_pivot = df.pivot_table(
         index='_time',
         columns='_field',
@@ -137,121 +124,50 @@ def read_influxdb_csv(file_path: str) -> Tuple[pd.DataFrame, float]:
     return df_pivot, sampling_rate
 
 # =====================================
-# PCA 함수
+# 연산 함수 (PCA, FFT, Stat)
 # =====================================
 
 def compute_pca(data_3axis: np.ndarray) -> Dict:
-    """
-    3축 데이터에 대한 PCA 수행
-    
-    Parameters:
-    - data_3axis: (n_samples, 3) shape의 numpy array
-    
-    Returns:
-    - dict with keys:
-        - 'pc1': First principal component (n_samples,)
-        - 'variance_ratio': Explained variance ratio of PC1
-        - 'direction': PC1 direction vector (3,)
-        - 'centered_data': Centered data (n_samples, 3)
-    """
+    """3축 데이터 PCA 수행"""
     if len(data_3axis) < 3:
-        return {
-            'pc1': np.zeros(len(data_3axis)),
-            'variance_ratio': 0.0,
-            'direction': np.array([0.0, 0.0, 0.0]),
-            'centered_data': data_3axis
-        }
+        return {'pc1': np.zeros(len(data_3axis)), 'variance_ratio': 0.0}
     
-    # 평균 제거 (centering)
     mean = np.mean(data_3axis, axis=0)
     centered_data = data_3axis - mean
-    
-    # 공분산 행렬
     cov_matrix = np.cov(centered_data, rowvar=False)
-    
-    # 고유값, 고유벡터 계산
     eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
     
-    # 고유값 내림차순 정렬
     idx = eigenvalues.argsort()[::-1]
     eigenvalues = eigenvalues[idx]
     eigenvectors = eigenvectors[:, idx]
     
-    # PC1 (첫 번째 주성분)
     pc1_direction = eigenvectors[:, 0]
     pc1_data = centered_data @ pc1_direction
     
-    # PC1 설명력 (분산 비율)
     total_variance = np.sum(eigenvalues)
     variance_ratio = eigenvalues[0] / total_variance if total_variance > 0 else 0.0
     
-    return {
-        'pc1': pc1_data,
-        'variance_ratio': variance_ratio,
-        'direction': pc1_direction,
-        'centered_data': centered_data
-    }
-
-# =====================================
-# 벡터 특징 함수들
-# =====================================
+    return {'pc1': pc1_data, 'variance_ratio': variance_ratio}
 
 def compute_vector_rms(data_3axis: np.ndarray) -> float:
-    """
-    Vector RMS: sqrt(mean(||v||²))
-    
-    Optimized: Eliminates unnecessary sqrt → square cancellation
-    
-    물리적 의미: 3축의 총 진동 에너지 (방향 무관)
-    """
+    """Vector RMS: 전체 에너지"""
     return np.sqrt(np.mean(np.sum(data_3axis ** 2, axis=1)))
 
-def compute_vector_crest_factor(data_3axis: np.ndarray) -> float:
-    """
-    Vector Crest Factor: max(||v||) / RMS(||v||)
-    
-    물리적 의미: 벡터 크기의 충격도 (축 독립적)
-    """
-    vector_magnitude = np.sqrt(np.sum(data_3axis ** 2, axis=1))
-    peak = np.max(vector_magnitude)
-    rms = np.sqrt(np.mean(vector_magnitude ** 2))
-    return peak / rms if rms > 0 else 0.0
-
 def compute_pc1_peak_to_peak(pc1_data: np.ndarray) -> float:
-    """PC1 축의 Peak-to-Peak"""
+    """PC1 Peak-to-Peak"""
     return np.ptp(pc1_data)
 
 def compute_pc1_freq_features(pc1_data: np.ndarray, sampling_rate: float) -> Tuple[float, float]:
-    """
-    PC1 축의 주파수 특징 (Dominant Freq + RMSF)
-    
-    FFT를 한 번만 수행하고 두 특징을 모두 계산
-    
-    Parameters:
-    - pc1_data: PC1 시계열 데이터
-    - sampling_rate: 샘플링 주파수
-    
-    Returns:
-    - (dominant_freq, rmsf) tuple
-    
-    Optimization: 기존에는 FFT를 2번 호출했지만,
-                  같은 스펙트럼을 공유하므로 1번만 호출!
-    """
+    """PC1 주파수 특징 (Dominant Freq, RMSF)"""
     N = len(pc1_data)
-    if N < 2:
-        return 0.0, 0.0
+    if N < 2: return 0.0, 0.0
     
-    # DC 제거
     signal = pc1_data - np.mean(pc1_data)
-    
-    # === FFT 한 번만! ===
     spectrum = np.abs(rfft(signal))
     freqs = rfftfreq(N, 1/sampling_rate)
     
-    # === Dominant Frequency (스펙트럼 재사용) ===
     dominant_freq = freqs[np.argmax(spectrum)] if len(spectrum) > 0 else 0.0
     
-    # === RMSF (스펙트럼 재사용) ===
     power = spectrum ** 2
     numerator = np.sum((freqs ** 2) * power)
     denominator = np.sum(power)
@@ -259,99 +175,56 @@ def compute_pc1_freq_features(pc1_data: np.ndarray, sampling_rate: float) -> Tup
     
     return dominant_freq, rmsf
 
-def compute_mean(signal: np.ndarray) -> float:
-    """Mean"""
-    return np.mean(signal)
-
 def compute_std_xyz(data_3axis: np.ndarray) -> Tuple[float, float, float]:
-    """
-    각 축의 표준편차 (Standard Deviation)
-    
-    물리적 의미: 각 축별 회전 속도 변동성
-    
-    Parameters:
-    - data_3axis: (n_samples, 3) numpy array
-    
-    Returns:
-    - (std_x, std_y, std_z) tuple
-    """
-    return (
-        np.std(data_3axis[:, 0]),
-        np.std(data_3axis[:, 1]),
-        np.std(data_3axis[:, 2])
-    )
+    """각 축 표준편차"""
+    return (np.std(data_3axis[:, 0]), np.std(data_3axis[:, 1]), np.std(data_3axis[:, 2]))
 
 # =====================================
-# 통합 특징 추출 함수
+# 통합 특징 추출 함수 (V18 수정됨)
 # =====================================
 
 def extract_features(data_dict: Dict[str, np.ndarray], 
                          sampling_rate: float) -> Dict[str, float]:
     """
-    특징 추출: PCA + 벡터 스칼라화
-    
-    Parameters:
-    - data_dict: {
-        'accel': (n, 3) numpy array,
-        'gyro': (n, 3) numpy array,
-        'pressure': (n,) numpy array,
-        'temperature': (n,) numpy array
-      }
-    - sampling_rate: 샘플링 주파수
-    
-    Returns:
-    - features: {feature_name: value} 딕셔너리
+    특징 추출: 가속도(PCA), 각속도(STD), IR Counter(Cycle, Jitter)
     """
     features = {}
     
-    # ===== 가속도 특징 (9개) =====
+    # 1. 가속도 특징 (5개)
     if 'accel' in data_dict and len(data_dict['accel']) > 0:
         accel_data = data_dict['accel']
-        
-        # PCA 수행
         pca_result = compute_pca(accel_data)
         
-        # 1. Vector RMS
         features['accel_VectorRMS'] = compute_vector_rms(accel_data)
-        
-        # 2. PC1 Peak-to-Peak
         features['accel_PC1_PeakToPeak'] = compute_pc1_peak_to_peak(pca_result['pc1'])
         
-        # 3. Vector Crest Factor
-        features['accel_VectorCrestFactor'] = compute_vector_crest_factor(accel_data)
-        
-        # 4-5. PC1 Dominant Frequency + RMSF (FFT 한 번에 둘 다!)
-        dominant_freq, rmsf = compute_pc1_freq_features(pca_result['pc1'], sampling_rate)
-        features['accel_PC1_DominantFreq'] = dominant_freq
+        dom_freq, rmsf = compute_pc1_freq_features(pca_result['pc1'], sampling_rate)
+        features['accel_PC1_DominantFreq'] = dom_freq
         features['accel_PC1_RMSF'] = rmsf
-        
-        # 6. PC1 Variance Ratio (설명력)
         features['accel_PC1_VarianceRatio'] = pca_result['variance_ratio']
-        
-        # 7-9. PC1 Direction (방향 벡터)
-        features['accel_PC1_Direction_X'] = pca_result['direction'][0]
-        features['accel_PC1_Direction_Y'] = pca_result['direction'][1]
-        features['accel_PC1_Direction_Z'] = pca_result['direction'][2]
     
-    # ===== 각속도 특징 (4개) =====
+    # 2. 각속도 특징 (3개)
     if 'gyro' in data_dict and len(data_dict['gyro']) > 0:
         gyro_data = data_dict['gyro']
-        
-        # 1. Vector RMS (총 불안정성)
-        features['gyro_VectorRMS'] = compute_vector_rms(gyro_data)
-        
-        # 2-4. 축별 표준편차 (방향별 변동성)
         std_x, std_y, std_z = compute_std_xyz(gyro_data)
         features['gyro_STD_X'] = std_x
         features['gyro_STD_Y'] = std_y
         features['gyro_STD_Z'] = std_z
-    
-    # ===== 환경 특징 (2개) =====
-    if 'pressure' in data_dict and len(data_dict['pressure']) > 0:
-        features['pressure_Mean'] = compute_mean(data_dict['pressure'])
-    
-    if 'temperature' in data_dict and len(data_dict['temperature']) > 0:
-        features['temperature_Mean'] = compute_mean(data_dict['temperature'])
+        
+    # 3. IR Counter 특징 (2개) - 신규 추가
+    if 'ir_avg' in data_dict and 'ir_last' in data_dict:
+        avg_cycle = data_dict['ir_avg']
+        last_cycle = data_dict['ir_last']
+        
+        if len(avg_cycle) > 0 and len(last_cycle) > 0:
+            # 평균 사이클 타임 (윈도우 내 평균)
+            current_avg_cycle = np.mean(avg_cycle)
+            features['ir_AvgCycleTime'] = current_avg_cycle
+            
+            # 사이클 지터 = last_cycle_ms - 평균 사이클 타임
+            # (윈도우 내에서의 편차 평균)
+            jitter_values = last_cycle - avg_cycle
+            features['ir_CycleJitter'] = np.mean(jitter_values)
     
     return features
 
@@ -363,158 +236,142 @@ def process_multi_sensor_files(file_dict: Dict[str, str],
                                     resample_rate: str = '100ms',
                                     window_size: float = WINDOW_SIZE,
                                     window_overlap: float = WINDOW_OVERLAP) -> pd.DataFrame:
-    """
-    여러 센서 파일을 동기화하여 특징 추출
     
-    Parameters:
-    - file_dict: {sensor_type: file_path} 딕셔너리
-    - resample_rate: 동기화 시 리샘플링 주기
-    - window_size: 윈도우 크기 (초)
-    - window_overlap: 윈도우 겹침 (초)
+    print("\n=== Multi-Sensor Processing V18 (Accel/Gyro + IR Counter) ===")
+    print(f"Target features: 10 (Accel: 5, Gyro: 3, IR: 2)")
     
-    Returns:
-    - 특징 DataFrame
-    """
-    
-    print("\n=== Multi-Sensor Processing (PCA + Vector Scalarization) ===")
-    print(f"Expected features: 15 (Accel: 9, Gyro: 4, Env: 2)")
-    
-    # 1. 각 센서 파일 독립적으로 읽고 리샘플링
+    # 1. 각 센서 파일 읽기 및 필드 매핑
     resampled_dfs = []
-    sensor_info = []
     
-    sensor_fields = {
-        'accel_gyro': ['fields_accel_x', 'fields_accel_y', 'fields_accel_z',
-                       'fields_gyro_x', 'fields_gyro_y', 'fields_gyro_z'],
-        'pressure': ['fields_pressure_hpa', 'fields_temperature_c']
+    # 센서별 필요한 필드 정의 (InfluxDB _field 값 기준)
+    # 1124_accel_gyro 파일은 보통 fields_ 접두어가 붙거나, 원본에 따라 다를 수 있음.
+    # 1124_IRcounter 파일은 avg_cycle_ms, last_cycle_ms 필드를 가짐
+    sensor_fields_map = {
+        'accel_gyro': [
+            'fields_accel_x', 'fields_accel_y', 'fields_accel_z',
+            'fields_gyro_x', 'fields_gyro_y', 'fields_gyro_z',
+            'accel_x', 'accel_y', 'accel_z', # 접두어 없는 경우 대비
+            'gyro_x', 'gyro_y', 'gyro_z'
+        ],
+        'ir_counter': [
+            'avg_cycle_ms', 'last_cycle_ms'
+        ]
     }
     
     for sensor_type, file_path in file_dict.items():
         if os.path.exists(file_path):
             try:
                 df, sr = read_influxdb_csv(file_path)
-                sensor_info.append(f"{sensor_type}: {len(df)} samples @ {sr:.2f} Hz")
+                print(f"Loaded {sensor_type}: {len(df)} rows, {sr:.2f}Hz")
                 
                 df_indexed = df.set_index('_time')
                 
-                # 해당 센서의 필드들 선택
-                available_fields = [col for col in df_indexed.columns 
-                                   if col in sensor_fields.get(sensor_type, [])]
+                # 사용 가능한 컬럼만 필터링
+                target_fields = sensor_fields_map.get(sensor_type, [])
+                available_cols = [c for c in df_indexed.columns if c in target_fields]
                 
-                if available_fields:
-                    df_resampled = df_indexed[available_fields].resample(resample_rate).mean()
+                if available_cols:
+                    # 리샘플링 (평균)
+                    df_resampled = df_indexed[available_cols].resample(resample_rate).mean()
                     resampled_dfs.append(df_resampled)
+                else:
+                    print(f"Warning: No matching fields found in {sensor_type}. Columns: {df_indexed.columns.tolist()}")
                     
             except Exception as e:
-                print(f"  Error reading {sensor_type}: {e}")
-    
-    for info in sensor_info:
-        print(f"  {info}")
+                print(f"Error reading {sensor_type}: {e}")
     
     if not resampled_dfs:
         return pd.DataFrame()
     
-    # 2. Outer join으로 병합
+    # 2. 데이터 병합 (Outer Join)
     print(f"\nSynchronizing at {resample_rate}...")
-    
-    merged_df = resampled_dfs[0].copy()
+    merged_df = resampled_dfs[0]
     for df in resampled_dfs[1:]:
         merged_df = merged_df.join(df, how='outer')
     
-    # 3. NaN 보간
     merged_df = merged_df.ffill().bfill()
-    
-    # 4. 상대 시간 추가
     merged_df = merged_df.reset_index()
-    merged_df['Time(s)'] = (merged_df['_time'] - merged_df['_time'].iloc[0]).dt.total_seconds()
     
-    print(f"Synchronized: {len(merged_df)} samples")
+    # 상대 시간 계산 (가동 시작 시각 기준)
+    start_time_abs = merged_df['_time'].iloc[0]
+    merged_df['Time(s)'] = (merged_df['_time'] - start_time_abs).dt.total_seconds()
     
-    # 5. 윈도우 기반 특징 추출
+    print(f"Synchronized Data: {len(merged_df)} samples, Duration: {merged_df['Time(s)'].iloc[-1]:.2f}s")
+    
+    # 3. 윈도우링 및 특징 추출
     window_step = window_size - window_overlap
-    
     n_samples = len(merged_df)
-    total_time = merged_df['Time(s)'].iloc[-1] - merged_df['Time(s)'].iloc[0]
+    total_time = merged_df['Time(s)'].iloc[-1]
     effective_sr = (n_samples - 1) / total_time if total_time > 0 else 1.0
     
-    print(f"\nExtracting features with {window_size}s windows (overlap: {window_overlap}s)...")
-    print(f"Effective sampling rate: {effective_sr:.2f} Hz")
-    
     features_list = []
-    
-    start_time = merged_df['Time(s)'].iloc[0]
-    end_time = merged_df['Time(s)'].iloc[-1]
-    
-    current_time = start_time
+    current_time = 0.0
     window_count = 0
     
-    while current_time + window_size <= end_time:
+    # 컬럼명 정리 (접두어 처리)
+    cols = merged_df.columns
+    accel_cols = [c for c in cols if 'accel_x' in c] + [c for c in cols if 'accel_y' in c] + [c for c in cols if 'accel_z' in c]
+    gyro_cols = [c for c in cols if 'gyro_x' in c] + [c for c in cols if 'gyro_y' in c] + [c for c in cols if 'gyro_z' in c]
+    # IR 컬럼 찾기 (정확한 매칭)
+    avg_cycle_col = next((c for c in cols if 'avg_cycle_ms' in c), None)
+    last_cycle_col = next((c for c in cols if 'last_cycle_ms' in c), None)
+
+    # 3축 순서 보장 (x, y, z)
+    accel_cols.sort()
+    gyro_cols.sort()
+
+    while current_time + window_size <= total_time:
         window_end = current_time + window_size
-        
-        # 윈도우 데이터 추출
-        window_mask = (merged_df['Time(s)'] >= current_time) & (merged_df['Time(s)'] < window_end)
-        window_data = merged_df[window_mask]
+        mask = (merged_df['Time(s)'] >= current_time) & (merged_df['Time(s)'] < window_end)
+        window_data = merged_df[mask]
         
         if len(window_data) < 2:
             current_time += window_step
             continue
-        
-        # 데이터 준비
+            
         data_dict = {}
         
-        # 가속도 3축
-        accel_cols = ['fields_accel_x', 'fields_accel_y', 'fields_accel_z']
-        if all(col in window_data.columns for col in accel_cols):
-            accel_3axis = window_data[accel_cols].values
-            # NaN 제거
-            valid_mask = ~np.isnan(accel_3axis).any(axis=1)
-            if valid_mask.sum() > 0:
-                data_dict['accel'] = accel_3axis[valid_mask]
+        # Accel Data
+        if len(accel_cols) == 3:
+            vals = window_data[accel_cols].values
+            if not np.isnan(vals).any():
+                data_dict['accel'] = vals
         
-        # 각속도 3축
-        gyro_cols = ['fields_gyro_x', 'fields_gyro_y', 'fields_gyro_z']
-        if all(col in window_data.columns for col in gyro_cols):
-            gyro_3axis = window_data[gyro_cols].values
-            valid_mask = ~np.isnan(gyro_3axis).any(axis=1)
-            if valid_mask.sum() > 0:
-                data_dict['gyro'] = gyro_3axis[valid_mask]
+        # Gyro Data
+        if len(gyro_cols) == 3:
+            vals = window_data[gyro_cols].values
+            if not np.isnan(vals).any():
+                data_dict['gyro'] = vals
         
-        # 환경
-        if 'fields_pressure_hpa' in window_data.columns:
-            pressure = window_data['fields_pressure_hpa'].values
-            pressure = pressure[~np.isnan(pressure)]
-            if len(pressure) > 0:
-                data_dict['pressure'] = pressure
-        
-        if 'fields_temperature_c' in window_data.columns:
-            temperature = window_data['fields_temperature_c'].values
-            temperature = temperature[~np.isnan(temperature)]
-            if len(temperature) > 0:
-                data_dict['temperature'] = temperature
+        # IR Data
+        if avg_cycle_col and last_cycle_col:
+            avgs = window_data[avg_cycle_col].values
+            lasts = window_data[last_cycle_col].values
+            if not np.isnan(avgs).any() and not np.isnan(lasts).any():
+                data_dict['ir_avg'] = avgs
+                data_dict['ir_last'] = lasts
         
         # 특징 추출
-        features = extract_features(data_dict, effective_sr)
+        feats = extract_features(data_dict, effective_sr)
         
-        # 메타데이터 추가
-        features['window_id'] = window_count
-        features['start_time'] = current_time
-        features['end_time'] = window_end
+        # 메타데이터
+        feats['window_id'] = window_count
+        feats['start_time'] = current_time
+        feats['end_time'] = window_end
         
-        features_list.append(features)
+        features_list.append(feats)
         window_count += 1
         current_time += window_step
-    
+        
     print(f"Extracted features from {window_count} windows")
     
+    # 결과 생성
     result_df = pd.DataFrame(features_list)
-    
-    # 컬럼 순서 정리 (메타데이터 먼저)
-    meta_cols = ['window_id', 'start_time', 'end_time']
-    feature_cols = [col for col in result_df.columns if col not in meta_cols]
-    result_df = result_df[meta_cols + feature_cols]
-    
-    print(f"Total feature columns: {len(feature_cols)}")
-    
+    if not result_df.empty:
+        meta_cols = ['window_id', 'start_time', 'end_time']
+        feat_cols = [c for c in result_df.columns if c not in meta_cols]
+        result_df = result_df[meta_cols + feat_cols]
+        
     return result_df
 
 # =====================================
@@ -522,30 +379,30 @@ def process_multi_sensor_files(file_dict: Dict[str, str],
 # =====================================
 
 if __name__ == "__main__":
-    print("\n" + "=" * 70)
-    print("Feature Extraction - PCA + Vector Scalarization")
-    print("=" * 70)
-    
-    sensor_files = {
-        'accel_gyro': 'data/raw/1120 sensor_data/1120_accel_gyro_normal.csv',
-        'pressure': 'data/raw/1120 sensor_data/1120_pressure_normal.csv',
+    # 파일 경로 설정 (사용자 환경에 맞게 수정 필요)
+    input_files = {
+        'accel_gyro': 'data/raw/1124 sensor_data/1124_accel_gyro_normal.csv',
+        'ir_counter': 'data/raw/1124 sensor_data/1124_IRcounter_normal.csv'
     }
     
-    valid_files = {k: v for k, v in sensor_files.items() if os.path.exists(v)}
+    # 파일 존재 확인
+    valid_files = {k: v for k, v in input_files.items() if os.path.exists(v)}
     
     if valid_files:
-        features = process_multi_sensor_files(
+        features_df = process_multi_sensor_files(
             valid_files,
-            resample_rate='78.125ms',  # ~12.8Hz
-            window_size=WINDOW_SIZE,
-            window_overlap=WINDOW_OVERLAP
+            resample_rate='78.125ms',  # 약 12.8Hz (센서 주기에 맞춤)
+            window_size=10.0,
+            window_overlap=5.0
         )
         
-        if not features.empty:
-            output_path = os.path.join(OUTPUT_DIR, "1120_features.csv")
-            features.to_csv(output_path, index=False)
-            print(f"\n✓ Saved to: {output_path}")
-            print(f"✓ Shape: {features.shape}")
-            print(f"✓ Features per window: {features.shape[1] - 3}")
+        if not features_df.empty:
+            out_path = os.path.join(OUTPUT_DIR, "1124_features_v18.csv")
+            features_df.to_csv(out_path, index=False)
+            print(f"\n✓ Saved: {out_path}")
+            print(f"✓ Shape: {features_df.shape}")
+            print("✓ Features extracted:")
+            for col in features_df.columns[3:]:
+                print(f"  - {col}")
     else:
-        print("No valid files found. Please check file paths.")
+        print("No valid files found. Check paths.")
