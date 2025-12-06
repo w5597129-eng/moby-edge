@@ -37,7 +37,7 @@ WINDOW_TOPIC_ROOT = "factory/inference/windows"
 RESULT_TOPIC_ROOT = "factory/inference/results"
 
 # V18 Feature Count (Cycle Time & Jitter Added)
-EXPECTED_FEATURE_COUNT = 10  # accel(5) + gyro(3) + ir(2)
+EXPECTED_FEATURE_COUNT_V18 = 10  # accel(5) + gyro(3) + ir(2)
 
 # Canonical feature order for V18 - MUST match training data column order
 # This ensures consistency between CSV training and real-time inference
@@ -48,6 +48,29 @@ FEATURE_ORDER_V18 = [
     'accel_PC1_DominantFreq',
     'accel_PC1_RMSF',
     'accel_PC1_VarianceRatio',
+    # Gyro features (3)
+    'gyro_STD_X',
+    'gyro_STD_Y',
+    'gyro_STD_Z',
+    # IR Counter features (2)
+    'ir_AvgCycleTime',
+    'ir_CycleJitter',
+]
+
+# V19 Feature Count (Mean XYZ Added for tilt/orientation detection)
+EXPECTED_FEATURE_COUNT = 13  # accel(8) + gyro(3) + ir(2)
+
+# Canonical feature order for V19 - MUST match training data column order
+FEATURE_ORDER_V19 = [
+    # Accel features (8)
+    'accel_VectorRMS',
+    'accel_PC1_PeakToPeak',
+    'accel_PC1_DominantFreq',
+    'accel_PC1_RMSF',
+    'accel_PC1_VarianceRatio',
+    'accel_Mean_X',
+    'accel_Mean_Y',
+    'accel_Mean_Z',
     # Gyro features (3)
     'gyro_STD_X',
     'gyro_STD_Y',
