@@ -31,6 +31,10 @@ import numpy as np
 import pandas as pd
 import paho.mqtt.client as mqtt
 
+# 환경변수에서 MQTT 브로커 설정 가져오기
+DEFAULT_MQTT_BROKER = os.environ.get('MQTT_BROKER', 'localhost')
+DEFAULT_MQTT_PORT = int(os.environ.get('MQTT_PORT', '1883'))
+
 # 상위 디렉토리를 path에 추가
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.inference_interface import (
@@ -328,8 +332,10 @@ def main():
     parser.add_argument('--csv', required=True, help='메인 CSV 파일 경로')
     parser.add_argument('--ir-csv', help='IR 센서 CSV 파일 경로 (옵션)')
     parser.add_argument('--speed', type=float, default=1.0, help='재생 속도 배율 (기본: 1.0)')
-    parser.add_argument('--broker', default='192.168.80.208', help='MQTT 브로커 주소')
-    parser.add_argument('--port', type=int, default=1883, help='MQTT 포트')
+    parser.add_argument('--broker', default=DEFAULT_MQTT_BROKER, 
+                        help=f'MQTT 브로커 주소 (기본: {DEFAULT_MQTT_BROKER}, 환경변수 MQTT_BROKER)')
+    parser.add_argument('--port', type=int, default=DEFAULT_MQTT_PORT, 
+                        help=f'MQTT 포트 (기본: {DEFAULT_MQTT_PORT}, 환경변수 MQTT_PORT)')
     parser.add_argument('--window-size', type=float, default=WINDOW_SIZE, 
                         help=f'윈도우 크기(초) (기본: {WINDOW_SIZE})')
     parser.add_argument('--window-overlap', type=float, default=WINDOW_OVERLAP,
