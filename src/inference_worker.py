@@ -93,7 +93,7 @@ DEFAULT_MODEL_CONFIGS: List[ModelConfig] = [
         name="mlp_classifier",
         sensor_type="accel_gyro",
         model_path=_resolve_path(
-            "models/mlp_classifier.onnx",
+            "models/mlp_classifier.pkl",
         ),
         scaler_path=_resolve_path(
             "models/scaler_mlp.pkl",
@@ -429,6 +429,8 @@ class InferenceEngine:
             except Exception:
                 pass
 
+
+
         # IR Counter data (avg_cycle_ms, last_cycle_ms)
         avg_cycle_col = 'fields_avg_cycle_ms'
         last_cycle_col = 'fields_last_cycle_ms'
@@ -448,22 +450,29 @@ class InferenceEngine:
 
         if data_dict:
             try:
+                # V19 FFT Extraction (Native 100Hz)
+                # No resampling needed as sensor_final.py is now 100Hz
                 feats_dict = multi_sensor_extract_features(data_dict, sr)
-                # Use canonical feature order from inference_interface for consistency
-                # This ensures the same order as training data CSV columns
-                vec = [float(feats_dict.get(k, 0.0)) for k in FEATURE_ORDER_V18]
+                
+                # Order consistent with FEATURE_CONFIG_V19
+                # Accel (8) + Gyro (3) + IR (1) = 12 Features
+                ordered_keys = [
+                    'accel_VectorRMS', 'accel_PC1_PeakToPeak', 'accel_PC1_DominantFreq', 
+                    'accel_PC1_BandEnergy_Low', 'accel_PC1_BandEnergy_High', 
+                    'accel_PC1_SpectralEntropy', 'accel_PC1_RMSF', 'accel_PC1_VarianceRatio',
+                    'gyro_STD_X', 'gyro_STD_Y', 'gyro_STD_Z',
+                    'ir_AvgCycleTime'
+                ]
+                
+                vec = [float(feats_dict.get(k, 0.0)) for k in ordered_keys]
                 result = np.asarray(vec, dtype=float).reshape(1, -1)
                 
-                # Validate feature count
-                if result.shape[1] != EXPECTED_FEATURE_COUNT:
-                    print(f"[FEATURE_VECTOR] ⚠️  V18 feature count mismatch: got {result.shape[1]}, expected {EXPECTED_FEATURE_COUNT}")
-                
-                _debug_feature_vector("v18_output", window_msg.sensor_type, result)
+                # Debug
+                _debug_feature_vector("v19_output", window_msg.sensor_type, result)
                 return result
             except Exception as e:
-                # V18 extraction failed - raise error
-                print(f"[FEATURE_VECTOR] ❌ V18 extraction failed: {e}")
-                raise RuntimeError(f"Feature extraction failed with V18: {e}") from e
+                print(f"[FEATURE_VECTOR] ❌ V19 extraction failed: {e}")
+                raise RuntimeError(f"Feature extraction failed with V19: {e}") from e
 
         # No data to extract features from
         raise RuntimeError("[FEATURE_VECTOR] ❌ No valid sensor data in window")

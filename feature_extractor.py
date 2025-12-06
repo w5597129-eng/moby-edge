@@ -1,50 +1,22 @@
-"""
-Compatibility wrapper for the project's feature extractor.
 
-Some scripts or external tooling may expect `feature_extractor` to be
-importable from the repository root. This wrapper re-exports the main
-functions from `src/feature_extractor.py` so both `import feature_extractor`
-and `from src.feature_extractor import ...` usages are supported.
-
-If `src` cannot be imported as a package, the wrapper will attempt to load
-the implementation file by path as a fallback.
-"""
-from __future__ import annotations
-
+import sys
 import os
-import importlib
+
+# Ensure src is in path to find the real module
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.join(current_dir, 'src')
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+# Import from the specific file in src to avoid module name collision
+# We use importlib to be specific
 import importlib.util
-from types import ModuleType
-from typing import Optional
+spec = importlib.util.spec_from_file_location("src_feature_extractor", os.path.join(src_dir, "feature_extractor.py"))
+module = importlib.util.module_from_spec(spec)
+sys.modules["src_feature_extractor"] = module
+spec.loader.exec_module(module)
 
-
-def _load_impl() -> Optional[ModuleType]:
-    # Prefer package-style import if available
-    try:
-        return importlib.import_module("src.feature_extractor")
-    except Exception:
-        # Fallback: load by file path relative to repo root
-        impl_path = os.path.join(os.path.dirname(__file__), "src", "feature_extractor.py")
-        if not os.path.exists(impl_path):
-            return None
-        spec = importlib.util.spec_from_file_location("feature_extractor_impl", impl_path)
-        if spec is None or spec.loader is None:
-            return None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-
-
-_impl = _load_impl()
-
-if _impl is not None:
-    # Re-export commonly used functions and constants if present (V18 only)
-    for attr in (
-        "extract_features",
-        "FEATURE_CONFIG_V18",
-        "process_multi_sensor_files",
-    ):
-        if hasattr(_impl, attr):
-            globals()[attr] = getattr(_impl, attr)
-
-__all__ = [n for n in ("extract_features", "FEATURE_CONFIG_V18", "process_multi_sensor_files") if n in globals()]
+# Expose symbols
+extract_features = module.extract_features
+FEATURE_CONFIG_V19 = module.FEATURE_CONFIG_V19
+FEATURE_CONFIG_V18 = FEATURE_CONFIG_V19

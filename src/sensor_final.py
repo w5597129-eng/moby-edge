@@ -175,7 +175,7 @@ TOPIC_IMU_WINDOWS = window_topic("accel_gyro")
 FREQ_DHT     = 1.0
 FREQ_VIB     = 12.8
 FREQ_SOUND   = 12.8
-FREQ_IMU     = 12.8  # Must match training data (~78.125ms resample rate)
+FREQ_IMU     = 100.0  # High-Freq for FFT analysis
 FREQ_PRESS   = 1   # BMP180 읽기 80-130ms 소요 → 1Hz로 낮춤 (다른 센서 블로킹 방지)
 
 # Backward-compatible interval defaults (seconds) — will be overwritten if
@@ -276,22 +276,33 @@ def init_mpu(bus):
     time.sleep(0.05)
     return addr
 
-def read_word_2c(bus, addr, reg):
-    hi = bus.read_byte_data(addr, reg)
-    lo = bus.read_byte_data(addr, reg + 1)
-    val = (hi << 8) | lo
-    if val >= 0x8000:
-        val = -((65535 - val) + 1)
-    return val
-
 def read_mpu(bus, addr):
-    ACCEL_SENS, GYRO_SENS = 16384.0, 131.0
-    ax = read_word_2c(bus, addr, 0x3B) / ACCEL_SENS
-    ay = read_word_2c(bus, addr, 0x3D) / ACCEL_SENS
-    az = read_word_2c(bus, addr, 0x3F) / ACCEL_SENS
-    gx = read_word_2c(bus, addr, 0x43) / GYRO_SENS
-    gy = read_word_2c(bus, addr, 0x45) / GYRO_SENS
-    gz = read_word_2c(bus, addr, 0x47) / GYRO_SENS
+    # Optimized block read for 100Hz+ sampling
+    # Read 14 bytes: Accel (6) + Temp (2) + Gyro (6)
+    # Register 0x3B starts Accel
+    try:
+        data = bus.read_i2c_block_data(addr, 0x3B, 14)
+    except Exception:
+        return 0, 0, 0, 0, 0, 0
+
+    # Helper to convert bytes to signed 16-bit
+    def to_signed(hi, lo):
+        val = (hi << 8) | lo
+        if val >= 0x8000:
+            val = -((65535 - val) + 1)
+        return val
+
+    ACCEL_SENS = 16384.0
+    GYRO_SENS = 131.0
+
+    ax = to_signed(data[0], data[1]) / ACCEL_SENS
+    ay = to_signed(data[2], data[3]) / ACCEL_SENS
+    az = to_signed(data[4], data[5]) / ACCEL_SENS
+    # Temp is data[6], data[7] - skipping
+    gx = to_signed(data[8], data[9]) / GYRO_SENS
+    gy = to_signed(data[10], data[11]) / GYRO_SENS
+    gz = to_signed(data[12], data[13]) / GYRO_SENS
+
     return ax, ay, az, gx, gy, gz
 
 def now_ns():
