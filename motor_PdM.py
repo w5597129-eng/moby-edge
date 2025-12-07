@@ -199,7 +199,7 @@ def ir_polling_loop():
             else:
                 if prev == 1 and cur == 0: record_hit(now_ns())
             prev = cur
-            time.sleep(0.001)
+            time.sleep(0.01)
     except Exception: return
 
 def start_ir_thread():
